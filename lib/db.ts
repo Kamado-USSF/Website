@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import seedSnapshot from '../data/ussf-database.json';
 
 export interface PersistentState {
   version: number;
@@ -46,11 +47,63 @@ export interface PersistentState {
   [key: string]: unknown;
 }
 
+type SqlClient = Awaited<ReturnType<typeof getSql>>;
+
+function isAlreadyExistsError(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : '';
+  const message = error instanceof Error ? error.message : '';
+  return code === '42P07' || code === '42P10' || message.includes('already exists');
+}
+
+let schemaReadyPromise: Promise<void> | null = null;
+
+/**
+ * Creates the state table and seeds it from the bundled snapshot when the
+ * database has not been migrated yet (Neon error 42P01, "relation does not
+ * exist", or an empty table). Idempotent and guarded so concurrent serverless
+ * cold starts cannot race the CREATE/INSERT.
+ */
+async function ensureStateTable(sql: SqlClient): Promise<void> {
+  if (!schemaReadyPromise) {
+    const attempt = (async () => {
+      if (!seedSnapshot || !Array.isArray(seedSnapshot.members) || !Array.isArray(seedSnapshot.customAssets)) {
+        throw new Error('The bundled database snapshot does not match the expected USSF state shape.');
+      }
+      try {
+        await sql`
+          CREATE TABLE IF NOT EXISTS ussf_app_state (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            state JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `;
+      } catch (error) {
+        // Another cold start may have created the table a moment earlier.
+        if (!isAlreadyExistsError(error)) throw error;
+      }
+      await sql`
+        INSERT INTO ussf_app_state (id, state)
+        VALUES (1, ${JSON.stringify(seedSnapshot)}::jsonb)
+        ON CONFLICT (id) DO NOTHING
+      `;
+    })();
+    schemaReadyPromise = attempt;
+    attempt.catch(() => {
+      if (schemaReadyPromise === attempt) schemaReadyPromise = null;
+    });
+  }
+  await schemaReadyPromise;
+}
+
 export async function getSql() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is not configured for this Vercel environment.');
   const { neon } = await import('@neondatabase/serverless');
-  return neon(connectionString);
+  const sql = neon(connectionString);
+  await ensureStateTable(sql);
+  return sql;
 }
 
 export async function readState() {
