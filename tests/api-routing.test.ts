@@ -253,3 +253,59 @@ test('public submissions remain reachable without a session', async () => {
   assert.notEqual(socialPost.state.status, 401);
   assert.equal(socialPost.state.status, 503);
 });
+
+test('route segments are derived from the request URL when the router drops the path parameter', async () => {
+  // Observed on Vercel: single-segment matches arrive with no query.path at all.
+  const session = createResponse();
+  await fallbackHandler({
+    method: 'GET',
+    query: {},
+    url: '/api/auth/session',
+    headers: {}
+  } as unknown as VercelRequest, session.response);
+  assert.equal(session.state.status, 200);
+  assert.deepEqual(session.state.body, { success: true, authenticated: false, member: null });
+
+  const unknown = createResponse();
+  await fallbackHandler({
+    method: 'GET',
+    query: {},
+    url: '/api/nonexist-single',
+    headers: {}
+  } as unknown as VercelRequest, unknown.response);
+  assert.equal(unknown.state.status, 404);
+  assert.match((unknown.state.body as { error: string }).error, /\/api\/nonexist-single$/);
+
+  const memberCreate = createResponse();
+  await fallbackHandler({
+    method: 'POST',
+    query: {},
+    url: '/api/members',
+    headers: {}
+  } as unknown as VercelRequest, memberCreate.response);
+  assert.equal(memberCreate.state.status, 401);
+  assert.match((memberCreate.state.body as { error: string }).error, /session required/i);
+});
+
+test('vercel.json rewrite segments (rp parameter) dispatch review routes to the session guard', async () => {
+  // Multi-segment paths arrive through /api/router?rp=<route>/<id> rewrites.
+  const claimReview = createResponse();
+  await fallbackHandler({
+    method: 'PUT',
+    query: { rp: 'claims/claim-42' },
+    headers: {},
+    body: { status: 'Approved' }
+  } as unknown as VercelRequest, claimReview.response);
+  assert.equal(claimReview.state.status, 401);
+  assert.match((claimReview.state.body as { error: string }).error, /session required/i);
+
+  const authLogin = createResponse();
+  await fallbackHandler({
+    method: 'POST',
+    query: { rp: 'auth/login' },
+    headers: {},
+    body: { accountName: 'kamado', password: 'wrong-password' }
+  } as unknown as VercelRequest, authLogin.response);
+  assert.equal(authLogin.state.status, 401);
+  assert.match((authLogin.state.body as { error: string }).error, /invalid administrator credentials/i);
+});

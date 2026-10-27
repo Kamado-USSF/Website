@@ -53,6 +53,44 @@ function cleanId(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 120) : '';
 }
 
+/**
+ * Resolves the /api/* route segments for this request.
+ *
+ * Vercel's router normally supplies them in `req.query.path`, but production
+ * deployments have been observed matching this catch-all WITHOUT the route
+ * parameter (single-segment matches arrive with an empty `path`), and
+ * vercel.json rewrites deliver segments through the `rp` query parameter.
+ * Falling back to the request URL guarantees every path dispatches correctly.
+ */
+function resolveRoutePath(req: VercelRequest): string[] {
+  const fromRewrite = req.query.rp;
+  if (fromRewrite !== undefined) {
+    const raw = Array.isArray(fromRewrite) ? fromRewrite.join('/') : String(fromRewrite);
+    return raw.split('/').filter(Boolean);
+  }
+
+  const fromRouter = req.query.path;
+  if (Array.isArray(fromRouter)) {
+    const segments = fromRouter.map(String).filter(Boolean);
+    if (segments.length > 0) return segments;
+  } else if (typeof fromRouter === 'string' && fromRouter) {
+    return [fromRouter];
+  }
+
+  const urlPath = String(req.url || '').split('?')[0];
+  return urlPath
+    .replace(/^\/api\/?/, '')
+    .split('/')
+    .filter(Boolean)
+    .map(segment => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    });
+}
+
 function methodNotAllowed(res: VercelResponse): void {
   res.status(405).json({ success: false, error: 'Method not allowed.' });
 }
@@ -211,7 +249,7 @@ async function handleReview(route: string, id: string, body: JsonObject, operati
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'no-store');
-  const path = Array.isArray(req.query.path) ? req.query.path : [String(req.query.path || '')];
+  const path = resolveRoutePath(req);
   const route = path[0];
   const id = cleanId(path[1]);
   const config = ROUTES[route];

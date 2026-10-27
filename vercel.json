@@ -1,5 +1,16 @@
 {
   "framework": "vite",
   "buildCommand": "npm run build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/auth/login", "destination": "/api/router?rp=auth/login" },
+    { "source": "/api/auth/session", "destination": "/api/router?rp=auth/session" },
+    { "source": "/api/auth/logout", "destination": "/api/router?rp=auth/logout" },
+    { "source": "/api/members/:id", "destination": "/api/router?rp=members/:id" },
+    { "source": "/api/claims/:id", "destination": "/api/router?rp=claims/:id" },
+    { "source": "/api/reports/:id", "destination": "/api/router?rp=reports/:id" },
+    { "source": "/api/promotions/:id", "destination": "/api/router?rp=promotions/:id" },
+    { "source": "/api/applications/:id", "destination": "/api/router?rp=applications/:id" },
+    { "source": "/api/link-requests/:id", "destination": "/api/router?rp=link-requests/:id" }
+  ]
 }
