@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
-import { randomUUID, timingSafeEqual } from 'crypto';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
 import { 
@@ -42,10 +42,27 @@ import {
   SquadGroupChat,
   USSFAchievement,
   USSFAssetItem,
-  KAMADO_ADMIN_ACCOUNT,
-  USSF_RANKS
+  KAMADO_ADMIN_ACCOUNT
 } from './src/data/ussfData';
 import { validateAsset, validateGroupInfo } from './lib/validation';
+import { toPublicState } from './lib/public-state';
+import type { PersistentState } from './lib/db';
+import {
+  buildClearSessionCookie,
+  buildSessionSetCookie,
+  createAdminSessionToken,
+  findAdminMember,
+  getSessionFromRequest,
+  requireAdminSession,
+  verifyAdminCredentials
+} from './lib/auth';
+import {
+  reviewApplication,
+  reviewClaim,
+  reviewLinkRequest,
+  reviewPromotion,
+  reviewReport
+} from './lib/review';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -162,27 +179,6 @@ function saveDatabase(db: AuthoritativeDatabase): boolean {
   }
 }
 
-function requireAdminToken(req: Request, res: Response): boolean {
-  const expectedToken = process.env.USSF_ADMIN_API_TOKEN;
-  if (!expectedToken) {
-    res.status(503).json({ success: false, error: 'USSF_ADMIN_API_TOKEN is not configured.' });
-    return false;
-  }
-  if (Buffer.byteLength(expectedToken) < 32) {
-    res.status(503).json({ success: false, error: 'USSF_ADMIN_API_TOKEN must contain at least 32 bytes.' });
-    return false;
-  }
-  const authorization = req.headers.authorization || '';
-  const providedToken = authorization.replace(/^Bearer\s+/i, '');
-  const expected = Buffer.from(expectedToken);
-  const provided = Buffer.from(providedToken);
-  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
-    res.status(401).json({ success: false, error: 'Administrator API token is missing or invalid.' });
-    return false;
-  }
-  return true;
-}
-
 export const app = express();
 
 async function startServer() {
@@ -195,18 +191,65 @@ async function startServer() {
 
   // ===================== API ROUTES =====================
 
-  // 1. Full Authoritative System State
+  // Administrator session lifecycle (server-validated; no client-held tokens)
+  app.post('/api/auth/login', (req, res) => {
+    const { accountName, password } = req.body || {};
+    if (!verifyAdminCredentials(accountName, password)) {
+      return res.status(401).json({ success: false, error: 'Invalid administrator credentials.' });
+    }
+    try {
+      const state = loadDatabase();
+      const adminMember = state.members.find(member => member.isAdmin || member.isOwner)
+        || state.members.find(member => member.id === KAMADO_ADMIN_ACCOUNT.id || member.cid === KAMADO_ADMIN_ACCOUNT.cid)
+        || KAMADO_ADMIN_ACCOUNT;
+      const token = createAdminSessionToken({ id: adminMember.id, name: adminMember.name });
+      res.setHeader('Set-Cookie', buildSessionSetCookie(token));
+      return res.json({ success: true, member: adminMember });
+    } catch (err: any) {
+      return res.status(503).json({ success: false, error: err?.message || 'Administrator session could not be created.' });
+    }
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.setHeader('Set-Cookie', buildClearSessionCookie());
+    res.json({ success: true });
+  });
+
+  app.get('/api/auth/session', (req, res) => {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      return res.json({ success: true, authenticated: false, member: null });
+    }
+    try {
+      const state = loadDatabase();
+      const member = findAdminMember(state.members, session);
+      return res.json({ success: true, authenticated: true, member: member || null });
+    } catch {
+      return res.json({ success: true, authenticated: true, member: null });
+    }
+  });
+
+  // 1. Full Authoritative System State (public view: private admin queues stripped)
   app.get('/api/state', (req, res) => {
     // Re-read DB from disk to ensure freshest multi-process view
     db = loadDatabase();
     res.json({
       success: true,
-      data: db
+      data: toPublicState(db as unknown as PersistentState)
     });
+  });
+
+  // Full state for authenticated administrators (claims, links, applications, payouts)
+  app.get('/api/admin-state', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
+    db = loadDatabase();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, data: db });
   });
 
   // 2. Members Management
   app.post('/api/members', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const member: USSFMember = req.body;
       if (!member || !member.id || !member.name) {
@@ -227,6 +270,7 @@ async function startServer() {
   });
 
   app.put('/api/members/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
       const updates: Partial<USSFMember> = req.body;
@@ -244,6 +288,7 @@ async function startServer() {
   });
 
   app.delete('/api/members/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
       db = loadDatabase();
@@ -298,33 +343,18 @@ async function startServer() {
   });
 
   app.put('/api/claims/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { status, note, reviewedBy, rejectionReason } = req.body;
       db = loadDatabase();
-      const claimIdx = db.claims.findIndex(c => c.id === id);
-      if (claimIdx === -1) {
-        return res.status(404).json({ success: false, error: 'Claim not found' });
-      }
-      const prevStatus = db.claims[claimIdx].status;
-      db.claims[claimIdx].status = status;
-      if (note !== undefined) db.claims[claimIdx].note = note;
-      if (reviewedBy) db.claims[claimIdx].reviewedBy = reviewedBy;
-      if (rejectionReason !== undefined) db.claims[claimIdx].rejectionReason = rejectionReason;
-      db.claims[claimIdx].reviewedAt = new Date().toISOString();
-
-      // If approved, disburse payout to claimant member profile and grant 25 promotion points
-      if (status === 'Approved' && prevStatus !== 'Approved') {
-        const claimant = db.members.find(m => m.name === db.claims[claimIdx].claimantName || m.cid === db.claims[claimIdx].claimantCid);
-        if (claimant) {
-          claimant.totalPayout = (claimant.totalPayout || 0) + db.claims[claimIdx].amount;
-          claimant.promotionPoints = (claimant.promotionPoints || 0) + 25;
-        }
+      const outcome = reviewClaim(db.claims, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
       }
       if (!saveDatabase(db)) {
         return res.status(500).json({ success: false, error: 'Could not persist reviewed claim.' });
       }
-      res.json({ success: true, claim: db.claims[claimIdx] });
+      res.json({ success: true, claim: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Server error reviewing claim.' });
     }
@@ -347,35 +377,16 @@ async function startServer() {
   });
 
   app.put('/api/reports/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { status } = req.body;
       db = loadDatabase();
-      const idx = db.fieldReports.findIndex(r => r.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ success: false, error: 'Report not found' });
-      }
-      const prevStatus = db.fieldReports[idx].status;
-      db.fieldReports[idx].status = status;
-
-      // If newly approved, credit patrol hours to host & participants
-      if (status === 'Approved' && prevStatus !== 'Approved') {
-        const report = db.fieldReports[idx];
-        const host = db.members.find(m => m.name === report.hostName || m.cid === report.hostCid);
-        if (host) {
-          host.patrolHours = (host.patrolHours || 0) + (report.durationHours || 1);
-          host.promotionPoints = (host.promotionPoints || 0) + 20;
-        }
-        for (const pName of report.participants || []) {
-          const participant = db.members.find(m => m.name === pName.trim());
-          if (participant) {
-            participant.patrolHours = (participant.patrolHours || 0) + (report.durationHours || 1);
-            participant.promotionPoints = (participant.promotionPoints || 0) + 10;
-          }
-        }
+      const outcome = reviewReport(db.fieldReports, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
       }
       saveDatabase(db);
-      res.json({ success: true, report: db.fieldReports[idx] });
+      res.json({ success: true, report: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message });
     }
@@ -398,51 +409,18 @@ async function startServer() {
   });
 
   app.put('/api/promotions/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { status, approvingOfficer, feedback, rejectionReason } = req.body;
       db = loadDatabase();
-      const idx = db.promotionRequests.findIndex(p => p.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ success: false, error: 'Promotion request not found.' });
-      }
-      const prevStatus = db.promotionRequests[idx].status;
-      db.promotionRequests[idx].status = status;
-      if (feedback !== undefined) db.promotionRequests[idx].notes = feedback;
-      if (approvingOfficer) db.promotionRequests[idx].reviewedBy = approvingOfficer;
-      if (rejectionReason !== undefined) db.promotionRequests[idx].rejectionReason = rejectionReason;
-      db.promotionRequests[idx].reviewedAt = new Date().toISOString();
-
-      // If approved, update member's rank and history!
-      if (status === 'Approved' && prevStatus !== 'Approved') {
-        const reqItem = db.promotionRequests[idx];
-        const member = db.members.find(m => m.cid === reqItem.operatorCid || m.name === reqItem.operatorName);
-        if (member) {
-          member.rank = reqItem.targetRank;
-          member.rankLevel = reqItem.targetRankLevel;
-          const rankDef = USSF_RANKS.find(r => r.name === reqItem.targetRank || r.level === reqItem.targetRankLevel);
-          if (rankDef?.category) {
-            member.rankCategory = rankDef.category as any;
-          }
-          if (member.promotionPoints >= reqItem.pointsCost) {
-            member.promotionPoints -= reqItem.pointsCost;
-          }
-          if (!member.promotionHistory) member.promotionHistory = [];
-          member.promotionHistory.unshift({
-            id: `hist-${Date.now()}`,
-            rankTitle: reqItem.targetRank,
-            rankLevel: reqItem.targetRankLevel,
-            timestamp: new Date().toISOString().split('T')[0],
-            pointsUsed: reqItem.pointsCost,
-            approvingOfficer: approvingOfficer || 'High Command Council',
-            citation: feedback || 'Promoted via verified command review.'
-          });
-        }
+      const outcome = reviewPromotion(db.promotionRequests, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
       }
       if (!saveDatabase(db)) {
         return res.status(500).json({ success: false, error: 'Could not persist reviewed promotion request.' });
       }
-      res.json({ success: true, promo: db.promotionRequests[idx] });
+      res.json({ success: true, promo: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Server error reviewing promotion request.' });
     }
@@ -475,53 +453,18 @@ async function startServer() {
   });
 
   app.put('/api/applications/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { status, reviewedBy, rejectionReason, cid } = req.body;
       db = loadDatabase();
-      const idx = db.applications.findIndex(a => a.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ success: false, error: 'Application not found' });
+      const outcome = reviewApplication(db.applications, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
       }
-      db.applications[idx].status = status;
-      if (rejectionReason || reviewedBy) {
-        db.applications[idx].reviewerNotes = rejectionReason || `Reviewed by ${reviewedBy}`;
+      if (!saveDatabase(db)) {
+        return res.status(500).json({ success: false, error: 'Could not persist the application review.' });
       }
-
-      // If approved/accepted, create official recruit in members roster!
-      if (status === 'Accepted' || status === 'Approved') {
-        const applicant = db.applications[idx];
-        const newMember: USSFMember = {
-          id: `member-${Date.now()}`,
-          cid: cid || `SF-${Math.floor(100 + Math.random() * 899)}`,
-          name: applicant.applicantName,
-          accountName: applicant.applicantName,
-          callsign: `Operator-${applicant.applicantName.substring(0, 4)}`,
-          rank: 'Recruit',
-          rankLevel: 1,
-          rankCategory: 'Regular Member',
-          division: 'First Infantry Regiment',
-          joinedDate: new Date().toISOString().split('T')[0],
-          status: 'Active Duty',
-          presenceStatus: 'Online',
-          promotionPoints: 0,
-          totalPayout: 0,
-          arrestCount: 0,
-          patrolHours: 0,
-          playtimeHours: applicant.playtimeHours || 0,
-          country: 'International',
-          age: applicant.age,
-          serviceRibbons: ['Enlistment Ribbon'],
-          avatarUrl: '/src/assets/images/military_leader_training_1790341999734.jpg',
-          avatarFrame: 'Standard Issue Border',
-          namecard: 'CIT2 Law Enforcer',
-          isMember: true,
-          isApplicant: false
-        };
-        db.members.unshift(newMember);
-      }
-      saveDatabase(db);
-      res.json({ success: true, application: db.applications[idx] });
+      res.json({ success: true, application: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message });
     }
@@ -616,28 +559,19 @@ async function startServer() {
   });
 
   app.put('/api/link-requests/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { status, reviewedBy, rejectionReason } = req.body;
       db = loadDatabase();
       db.linkRequests ||= [];
-      const idx = db.linkRequests.findIndex(r => r.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ success: false, error: 'Link request not found' });
+      const outcome = reviewLinkRequest(db.linkRequests, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
       }
-      db.linkRequests[idx].status = status;
-      if (reviewedBy) db.linkRequests[idx].reviewedBy = reviewedBy;
-      if (rejectionReason) db.linkRequests[idx].adminNote = rejectionReason;
-
-      if (status === 'Approved') {
-        const reqItem = db.linkRequests[idx];
-        const member = db.members.find(m => m.cid.trim().toLowerCase() === reqItem.inGameCid.trim().toLowerCase());
-        if (member) {
-          member.accountName = reqItem.username;
-        }
+      if (!saveDatabase(db)) {
+        return res.status(500).json({ success: false, error: 'Could not persist the account-link review.' });
       }
-      saveDatabase(db);
-      res.json({ success: true, linkRequest: db.linkRequests[idx], request: db.linkRequests[idx] });
+      res.json({ success: true, linkRequest: outcome.record, request: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message });
     }
@@ -649,7 +583,7 @@ async function startServer() {
   });
 
   app.post('/api/assets', (req, res) => {
-    if (!requireAdminToken(req, res)) return;
+    if (!requireAdminSession(req, res)) return;
     const validation = validateAsset(req.body);
     if (!validation.ok) return res.status(400).json({ success: false, error: validation.error });
     db = loadDatabase();
@@ -663,7 +597,7 @@ async function startServer() {
   });
 
   app.put('/api/assets/:id', (req, res) => {
-    if (!requireAdminToken(req, res)) return;
+    if (!requireAdminSession(req, res)) return;
     const validation = validateAsset(req.body);
     if (!validation.ok) return res.status(400).json({ success: false, error: validation.error });
     if (validation.value.id !== req.params.id) {
@@ -678,7 +612,7 @@ async function startServer() {
   });
 
   app.delete('/api/assets/:id', (req, res) => {
-    if (!requireAdminToken(req, res)) return;
+    if (!requireAdminSession(req, res)) return;
     db = loadDatabase();
     const originalAssets = db.customAssets || [];
     const customAssets = originalAssets.filter(asset => asset.id !== req.params.id);
@@ -690,7 +624,7 @@ async function startServer() {
 
   // 7. Group Info & Announcements
   app.post('/api/group-info', (req, res) => {
-    if (!requireAdminToken(req, res)) return;
+    if (!requireAdminSession(req, res)) return;
     try {
       const validation = validateGroupInfo(req.body);
       if (!validation.ok) return res.status(400).json({ success: false, error: validation.error });
@@ -707,6 +641,7 @@ async function startServer() {
 
   // 8. Admin Events
   app.post('/api/admin-events', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const event: AdminEvent = req.body;
       db = loadDatabase();
@@ -771,6 +706,7 @@ async function startServer() {
 
   // 12. Purge & Clean Database
   app.post('/api/reset-clean', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       db = getCleanInitialDb();
       saveDatabase(db);

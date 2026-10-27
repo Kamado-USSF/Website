@@ -78,7 +78,7 @@ import { Check, ShieldAlert, UserPlus, Lock } from 'lucide-react';
 import { tacticalAudio } from './utils/audioSynth';
 import { applyLanguageToDocument } from './utils/translations';
 import { validatePromotionEligibility } from './utils/promotionValidator';
-import { api } from './services/api';
+import { api, setUnauthorizedHandler } from './services/api';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<USSFView>('home');
@@ -106,6 +106,10 @@ export default function App() {
     } catch (e) {}
     return null; // Visitors must not be automatically authenticated
   });
+
+  // Server-verified administrator session (HttpOnly cookie). Only the server decides
+  // whether this browser holds a valid admin session; this flag just tracks its state.
+  const [adminSessionActive, setAdminSessionActive] = useState<boolean>(false);
 
   // Modals & Drawers
   const [isPhpExportOpen, setIsPhpExportOpen] = useState<boolean>(false);
@@ -214,29 +218,24 @@ export default function App() {
       }
       localStorage.setItem('ussf_members', JSON.stringify(cleaned));
 
-      // Seed official Admin Account credentials for Kamado
-      let registered = [];
+      // Administrator credentials live server-side only: the admin account is never
+      // seeded into browser storage with a password. Sign-in goes through POST /api/auth/login.
       try {
-        registered = JSON.parse(localStorage.getItem('ussf_registered_accounts') || '[]');
+        const registered: any[] = JSON.parse(localStorage.getItem('ussf_registered_accounts') || '[]');
+        const cleaned = registered.filter((a: any) => (a.username || '').toLowerCase() !== 'kamado');
+        if (cleaned.length !== registered.length) {
+          localStorage.setItem('ussf_registered_accounts', JSON.stringify(cleaned));
+        }
+        const memberPass: Record<string, string> = JSON.parse(localStorage.getItem('ussf_member_passwords') || '{}');
+        let passChanged = false;
+        for (const key of ['kamado', 'admin-kamado', 'sf-001']) {
+          if (key in memberPass) {
+            delete memberPass[key];
+            passChanged = true;
+          }
+        }
+        if (passChanged) localStorage.setItem('ussf_member_passwords', JSON.stringify(memberPass));
       } catch {}
-      if (!registered.some((a: any) => (a.username || '').toLowerCase() === 'kamado')) {
-        registered.push({
-          id: KAMADO_ADMIN_ACCOUNT.id,
-          username: 'kamado',
-          password: 'FeelPainAcceptPainAndKnowPain',
-          user: KAMADO_ADMIN_ACCOUNT
-        });
-        localStorage.setItem('ussf_registered_accounts', JSON.stringify(registered));
-      }
-
-      let memberPass: Record<string, string> = {};
-      try {
-        memberPass = JSON.parse(localStorage.getItem('ussf_member_passwords') || '{}');
-      } catch {}
-      memberPass['kamado'] = 'FeelPainAcceptPainAndKnowPain';
-      memberPass['admin-kamado'] = 'FeelPainAcceptPainAndKnowPain';
-      memberPass['sf-001'] = 'FeelPainAcceptPainAndKnowPain';
-      localStorage.setItem('ussf_member_passwords', JSON.stringify(memberPass));
     } catch {}
 
     const tourDisabled = localStorage.getItem('ussf_tutorial_disabled');
@@ -254,14 +253,27 @@ export default function App() {
     currentUser.isOwner || currentUser.isAdmin || (currentUser.specialRoles?.length || 0) > 0 ||
     currentUser.rankCategory === 'High Command' || (currentUser.rankLevel || 0) >= 16
   ));
+  // Restore the server admin session on load and react to expired/rejected sessions.
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAdminSessionActive(false));
+    let isMounted = true;
+    api.getSession().then(session => {
+      if (isMounted && session.authenticated) setAdminSessionActive(true);
+    });
+    return () => {
+      isMounted = false;
+      setUnauthorizedHandler(null);
+    };
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
-    let attemptedAdminRead = false;
     const syncState = async () => {
       try {
         let state;
-        if (clientClaimsAdmin && (!attemptedAdminRead || api.hasAdminToken())) {
-          attemptedAdminRead = true;
+        if (clientClaimsAdmin && adminSessionActive) {
+          // Admin state requires a valid server session cookie; a 401 here fires the
+          // unauthorized handler, which flips adminSessionActive back to public reads.
           state = await api.getAdminState();
         } else {
           state = await api.getState();
@@ -306,7 +318,7 @@ export default function App() {
       isMounted = false;
       clearInterval(pollInterval);
     };
-  }, [currentUser?.id, clientClaimsAdmin]);
+  }, [currentUser?.id, clientClaimsAdmin, adminSessionActive]);
 
   // Save members and current user to localStorage for fallback
   useEffect(() => {
@@ -469,6 +481,13 @@ export default function App() {
 
   const handleLogin = (member: USSFMember, keepLoggedIn: boolean) => {
     setCurrentUser(member);
+    // Administrator sign-in already happened against POST /api/auth/login; confirm the
+    // server session so admin-state reads start immediately.
+    if (member.isAdmin || member.isOwner) {
+      api.getSession()
+        .then(session => setAdminSessionActive(session.authenticated))
+        .catch(() => setAdminSessionActive(false));
+    }
     // Only add to official roster if they are an approved active member
     if (member.isMember && !member.isApplicant && member.status === 'Active Duty') {
       if (!members.find(m => m.id === member.id)) {
@@ -488,6 +507,9 @@ export default function App() {
       const offlineProfile: USSFMember = { ...currentUser, presenceStatus: 'Offline', isOnlineCit: false };
       setMembers(prev => prev.map(m => m.id === offlineProfile.id ? offlineProfile : m));
     }
+    // Clear the HttpOnly admin session cookie server-side (best effort).
+    api.logoutAdmin();
+    setAdminSessionActive(false);
     setCurrentUser(null);
     showToast('Logged out of Special Forces Command Network.');
   };
@@ -706,8 +728,27 @@ export default function App() {
     showToast(approved ? 'Password reset token approved & issued.' : 'Request dismissed.');
   };
 
-  const handleResolveLinkRequest = (_id: string, approved: boolean) => {
-    showToast(`Account-link ${approved ? 'approval' : 'rejection'} was not applied. Server-authenticated administrative review is not configured.`);
+  const handleResolveLinkRequest = async (id: string, approved: boolean) => {
+    try {
+      const reviewer = currentUser?.callsign || currentUser?.name || 'Administrator';
+      const status = approved ? 'Approved' : 'Rejected';
+      const updated = await api.reviewLinkRequest(
+        id,
+        status,
+        reviewer,
+        approved ? undefined : 'Rejected during administrative review.'
+      );
+      setLinkRequests(prev => prev.map(r => (r.id === id ? (updated || r) : r)));
+      showToast(`Account-link request ${status.toLowerCase()} for ${updated?.inGameName || 'operator'}.`);
+
+      // Refresh authoritative state so roster/account linking changes are reflected after reload.
+      const state = adminSessionActive ? await api.getAdminState() : await api.getState();
+      if (state.members) setMembers(state.members);
+      if (state.linkRequests) setLinkRequests(state.linkRequests);
+    } catch (err: any) {
+      showToast(`Error reviewing account-link request: ${err?.message || 'Failed to update'}`);
+      throw err;
+    }
   };
 
   // Daily Bonus claiming sends claim to Admin Section for monetary payout approval

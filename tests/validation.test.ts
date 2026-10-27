@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import type { AccountLinkRequest } from '../src/data/ussfData';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { requireAdminToken } from '../lib/auth';
+import {
+  SESSION_COOKIE_NAME,
+  createAdminSessionToken,
+  requireAdminSession,
+  verifyAdminCredentials,
+  verifySessionToken
+} from '../lib/auth';
 import { getSql, type PersistentState } from '../lib/db';
 import { toPublicState } from '../lib/public-state';
 import { parseApiResponse } from '../src/services/api';
@@ -58,8 +66,9 @@ test('group specification validation only accepts known fields and correctly typ
   assert.equal(validateGroupInfo({ skinsAvailable: '39, 164' }).ok, false);
 });
 
-test('admin token check fails closed for missing and invalid credentials', () => {
-  const previousToken = process.env.USSF_ADMIN_API_TOKEN;
+test('admin session guard fails closed for missing, foreign, and tampered sessions', () => {
+  const previousSecret = process.env.USSF_SESSION_SECRET;
+  process.env.USSF_SESSION_SECRET = 'test-session-secret-0123456789abcdef';
   const responseState: { status?: number; body?: unknown } = {};
   const response = {
     status(status: number) {
@@ -71,21 +80,90 @@ test('admin token check fails closed for missing and invalid credentials', () =>
       return this;
     }
   } as unknown as VercelResponse;
-  const request = (authorization?: string) => ({ headers: { authorization } }) as unknown as VercelRequest;
+  const request = (cookie?: string) => ({ headers: cookie ? { cookie } : {} }) as unknown as VercelRequest;
   try {
-    delete process.env.USSF_ADMIN_API_TOKEN;
-    assert.equal(requireAdminToken(request(), response), false);
-    assert.equal(responseState.status, 503);
+    // No session cookie at all
+    assert.equal(requireAdminSession(request(), response), false);
+    assert.equal(responseState.status, 401);
+    assert.match((responseState.body as { error: string }).error, /session required/i);
 
-    process.env.USSF_ADMIN_API_TOKEN = 'A'.repeat(32);
-    assert.equal(requireAdminToken(request('Bearer incorrect-token'), response), false);
+    const token = createAdminSessionToken({ id: 'admin-kamado', name: 'Kamado' });
+
+    // The same value in a different cookie carries no session
+    assert.equal(requireAdminSession(request(`other_cookie=${token}`), response), false);
     assert.equal(responseState.status, 401);
 
-    assert.equal(requireAdminToken(request(`Bearer ${'A'.repeat(32)}`), response), true);
+    // Tampered signature is rejected deterministically (MAC length mismatch)
+    const bodyOnly = token.slice(0, token.lastIndexOf('.'));
+    assert.equal(requireAdminSession(request(`${SESSION_COOKIE_NAME}=${bodyOnly}.not-a-valid-mac`), response), false);
+    assert.equal(responseState.status, 401);
+
+    // A valid signed session is accepted
+    assert.equal(requireAdminSession(request(`${SESSION_COOKIE_NAME}=${token}`), response), true);
   } finally {
-    if (previousToken === undefined) delete process.env.USSF_ADMIN_API_TOKEN;
-    else process.env.USSF_ADMIN_API_TOKEN = previousToken;
+    if (previousSecret === undefined) delete process.env.USSF_SESSION_SECRET;
+    else process.env.USSF_SESSION_SECRET = previousSecret;
   }
+});
+
+test('session tokens are bound to the server signing secret and expiry', () => {
+  const previousSecret = process.env.USSF_SESSION_SECRET;
+  try {
+    process.env.USSF_SESSION_SECRET = 'signing-secret-alpha-0123456789';
+    const token = createAdminSessionToken({ id: 'admin-kamado', name: 'Kamado' });
+    const session = verifySessionToken(token);
+    assert.equal(session?.sub, 'admin-kamado');
+    assert.equal(session?.admin, true);
+    assert.ok((session?.exp || 0) * 1000 > Date.now());
+
+    // A token signed with a different secret must not verify
+    process.env.USSF_SESSION_SECRET = 'signing-secret-bravo-9876543210';
+    assert.equal(verifySessionToken(token), null);
+    assert.equal(verifySessionToken('garbage-token'), null);
+    assert.equal(verifySessionToken(''), null);
+    assert.equal(verifySessionToken(undefined), null);
+  } finally {
+    if (previousSecret === undefined) delete process.env.USSF_SESSION_SECRET;
+    else process.env.USSF_SESSION_SECRET = previousSecret;
+  }
+});
+
+test('administrator credentials are validated server-side only', () => {
+  const previousPassword = process.env.USSF_ADMIN_PASSWORD;
+  process.env.USSF_ADMIN_PASSWORD = 'Server-Side-Only-Password';
+  try {
+    assert.equal(verifyAdminCredentials('Kamado', 'Server-Side-Only-Password'), true);
+    assert.equal(verifyAdminCredentials('sf-001', 'Server-Side-Only-Password'), true);
+    assert.equal(verifyAdminCredentials('kamado', 'wrong-password'), false);
+    assert.equal(verifyAdminCredentials('someone-else', 'Server-Side-Only-Password'), false);
+    assert.equal(verifyAdminCredentials('', ''), false);
+    assert.equal(verifyAdminCredentials(undefined, undefined), false);
+  } finally {
+    if (previousPassword === undefined) delete process.env.USSF_ADMIN_PASSWORD;
+    else process.env.USSF_ADMIN_PASSWORD = previousPassword;
+  }
+});
+
+test('client-side source carries no admin token logic or embedded administrator password', () => {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(ts|tsx|js|jsx)$/.test(entry.name)) continue;
+      const text = fs.readFileSync(full, 'utf-8');
+      if (/FeelPainAcceptPainAndKnowPain/.test(text)) offenders.push(`${full}: embedded administrator password`);
+      if (/USSF_ADMIN_API_TOKEN|ussf_admin_api_token|requireAdminToken/.test(text)) offenders.push(`${full}: administrator API token logic`);
+      if (/adminHeaders\s*\(/.test(text)) offenders.push(`${full}: token header helper`);
+      if (/window\.prompt\([^)]*token/i.test(text)) offenders.push(`${full}: token entry prompt`);
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(offenders, []);
 });
 
 test('missing database configuration fails before loading the Neon driver', async () => {
@@ -116,12 +194,11 @@ test('API parser reports plain-text and HTML failures without JSON syntax errors
   await assert.rejects(parseApiResponse(htmlFailure, 'Update group info'), /HTTP 404 \(text\/html\)/);
 });
 
-test('API parser preserves structured authorization errors', async () => {
-  const unauthorized = new Response(JSON.stringify({ success: false, error: 'Administrator token invalid.' }), {
-    status: 401,
-    headers: { 'Content-Type': 'application/json' }
-  });
-  await assert.rejects(parseApiResponse(unauthorized, 'Save asset'), /Administrator token invalid/);
+test('API parser preserves structured authorization errors', async () => {    const unauthorized = new Response(JSON.stringify({ success: false, error: 'Administrator session required.' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    await assert.rejects(parseApiResponse(unauthorized, 'Save asset'), /Administrator session required/);
 });
 
 test('public state excludes private queues and member financial/account data', () => {

@@ -8,7 +8,7 @@
     "start": "tsx server.ts",
     "build": "vite build",
     "preview": "tsx server.ts",
-    "test": "tsx --test tests/validation.test.ts tests/api-routing.test.ts tests/ussf-workflows.test.ts",
+    "test": "tsx --test tests/validation.test.ts tests/api-routing.test.ts tests/ussf-workflows.test.ts tests/review.test.ts",
     "migrate:neon": "node scripts/migrate-neon.mjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

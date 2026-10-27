@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { requireAdminToken } from '../lib/auth.js';
+import { requireAdminSession } from '../lib/auth.js';
 import { getSql, readState, sendApiError } from '../lib/db.js';
 import { validateAsset } from '../lib/validation.js';
 
@@ -14,7 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Method not allowed.' });
-  if (!requireAdminToken(req, res)) return;
+  if (!requireAdminSession(req, res)) return;
 
   try {
     const validation = validateAsset(req.body);

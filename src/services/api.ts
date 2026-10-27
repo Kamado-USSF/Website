@@ -48,6 +48,13 @@ interface ApiResponse {
   error?: string;
 }
 
+let unauthorizedHandler: (() => void) | null = null;
+
+/** Registered by the app so an expired or missing session can drop admin UI state. */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 export async function parseApiResponse<T extends ApiResponse>(res: Response, action: string): Promise<T> {
   const contentType = res.headers.get('content-type') || 'unknown content type';
   const rawBody = await res.text();
@@ -61,28 +68,52 @@ export async function parseApiResponse<T extends ApiResponse>(res: Response, act
   }
 
   if (!res.ok || json.success === false) {
-    if (res.status === 401 && typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem('ussf_admin_api_token');
-    }
+    if (res.status === 401 && unauthorizedHandler) unauthorizedHandler();
     throw new Error(json.error || `${action} failed: HTTP ${res.status}`);
   }
   return json;
 }
 
-function adminHeaders(): HeadersInit {
-  if (typeof window === 'undefined') throw new Error('Admin writes require a browser session.');
-  let token = sessionStorage.getItem('ussf_admin_api_token');
-  if (!token) {
-    token = window.prompt('Enter the administrator API token configured in Vercel:')?.trim() || '';
-    if (!token) throw new Error('Administrator API token was not provided.');
-    sessionStorage.setItem('ussf_admin_api_token', token);
-  }
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+export interface AdminSessionState {
+  authenticated: boolean;
+  member: USSFMember | null;
 }
 
+const jsonHeaders: HeadersInit = { 'Content-Type': 'application/json' };
+
 export const api = {
-  hasAdminToken(): boolean {
-    return typeof sessionStorage !== 'undefined' && Boolean(sessionStorage.getItem('ussf_admin_api_token'));
+  // Administrator sign-in, sign-out and session restore.
+  // The server validates credentials and replies with an HttpOnly session cookie;
+  // every later admin request carries that cookie automatically (same-origin).
+  async loginAdmin(accountName: string, password: string): Promise<USSFMember> {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: jsonHeaders,
+      credentials: 'same-origin',
+      body: JSON.stringify({ accountName, password })
+    });
+    const json = await parseApiResponse<{ success: boolean; member?: USSFMember; error?: string }>(res, 'Administrator sign-in');
+    if (!json.member) throw new Error('Administrator sign-in failed: response did not include the administrator profile.');
+    return json.member;
+  },
+
+  async logoutAdmin(): Promise<void> {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {
+      // Best effort: the cookie is HttpOnly, so only the server can clear it.
+    }
+  },
+
+  async getSession(): Promise<AdminSessionState> {
+    try {
+      const res = await fetch('/api/auth/session', { credentials: 'same-origin', headers: jsonHeaders });
+      const json = await res.json() as { success?: boolean; authenticated?: boolean; member?: USSFMember | null };
+      if (!json.success) return { authenticated: false, member: null };
+      return { authenticated: Boolean(json.authenticated), member: json.member || null };
+    } catch {
+      return { authenticated: false, member: null };
+    }
   },
 
   // 1. Fetch entire authoritative database state
@@ -94,7 +125,7 @@ export const api = {
   },
 
   async getAdminState(): Promise<AuthoritativeSystemState> {
-    const res = await fetch('/api/admin-state', { headers: adminHeaders() });
+    const res = await fetch('/api/admin-state', { headers: jsonHeaders, credentials: 'same-origin' });
     const json = await parseApiResponse<{ success: boolean; data?: AuthoritativeSystemState; error?: string }>(res, 'Fetch administrative state');
     if (!json.data) throw new Error('Fetch administrative state failed: response did not include authoritative data.');
     return json.data;
@@ -247,7 +278,7 @@ export const api = {
   async createAsset(asset: USSFAssetItem): Promise<USSFAssetItem[]> {
     const res = await fetch('/api/assets', {
       method: 'POST',
-      headers: adminHeaders(),
+      headers: jsonHeaders,
       body: JSON.stringify(asset)
     });
     const json = await parseApiResponse<{ success: boolean; assets?: USSFAssetItem[]; error?: string }>(res, 'Create asset');
@@ -258,7 +289,7 @@ export const api = {
   async updateAsset(asset: USSFAssetItem): Promise<USSFAssetItem[]> {
     const res = await fetch(`/api/assets/${encodeURIComponent(asset.id)}`, {
       method: 'PUT',
-      headers: adminHeaders(),
+      headers: jsonHeaders,
       body: JSON.stringify(asset)
     });
     const json = await parseApiResponse<{ success: boolean; assets?: USSFAssetItem[]; error?: string }>(res, 'Update asset');
@@ -269,7 +300,7 @@ export const api = {
   async deleteAsset(id: string): Promise<USSFAssetItem[]> {
     const res = await fetch(`/api/assets/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: adminHeaders()
+      headers: jsonHeaders
     });
     const json = await parseApiResponse<{ success: boolean; assets?: USSFAssetItem[]; error?: string }>(res, 'Delete asset');
     if (!json.assets) throw new Error('Delete asset failed: response did not include the saved asset list.');
@@ -280,7 +311,7 @@ export const api = {
   async updateGroupInfo(info: Partial<typeof USSF_GROUP_INFO>): Promise<typeof USSF_GROUP_INFO> {
     const res = await fetch('/api/group-info', {
       method: 'POST',
-      headers: adminHeaders(),
+      headers: jsonHeaders,
       body: JSON.stringify(info)
     });
     const json = await parseApiResponse<{ success: boolean; groupInfo?: typeof USSF_GROUP_INFO; error?: string }>(res, 'Update group specifications');

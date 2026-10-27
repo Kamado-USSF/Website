@@ -649,8 +649,12 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
     e.preventDefault();
     tacticalAudio.playTargetLock();
 
-    if (!onUpdateGroupInfo || isSavingPageInfo) return;
+    if (isSavingPageInfo) return;
     setPageInfoError(null);
+    if (!onUpdateGroupInfo) {
+      setPageInfoError('Group specification editing is not connected to the server.');
+      return;
+    }
     setIsSavingPageInfo(true);
     try {
       await onUpdateGroupInfo({
@@ -1746,7 +1750,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
             <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800/80 pb-2.5">
               {[
                 { id: 'groupSpecs', label: '1. Group Info & Motto' },
-                { id: 'promotions', label: '2. Promotion Pages & Requirements (22 Ranks)' },
+                { id: 'promotions', label: '2. Promotion Pages & Requirements (20 Ranks)' },
                 { id: 'skinsShaders', label: '3. Tactical Skins & Car Shader Images' }
               ].map(sub => (
                 <button
@@ -1806,13 +1810,13 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                       type="text"
                       value={editableGroupInfo.founder}
                       onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, founder: e.target.value })}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white mb-2"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white focus:outline-none focus:border-amber-500 mb-2"
                     />
                     <input
                       type="text"
                       value={editableGroupInfo.coFounder}
                       onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, coFounder: e.target.value })}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white focus:outline-none focus:border-amber-500"
                     />
                   </div>
 
@@ -1822,7 +1826,39 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                       rows={3}
                       value={editableGroupInfo.leaders}
                       onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, leaders: e.target.value })}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded p-2.5 text-white resize-none"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded p-2.5 text-white resize-none focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-neutral-400 block text-[10px] uppercase mb-1">GROUP COMMANDER</label>
+                    <input
+                      type="text"
+                      value={editableGroupInfo.commander}
+                      onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, commander: e.target.value })}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-neutral-400 block text-[10px] uppercase mb-1">ACTIVE SINCE</label>
+                    <input
+                      type="date"
+                      value={editableGroupInfo.activeSince}
+                      onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, activeSince: e.target.value })}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-neutral-400 block text-[10px] uppercase mb-1">COMMAND CENTERS</label>
+                    <input
+                      type="text"
+                      value={editableGroupInfo.commandCenters}
+                      onChange={(e) => setEditableGroupInfo({ ...editableGroupInfo, commandCenters: e.target.value })}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-white focus:outline-none focus:border-amber-500"
                     />
                   </div>
                 </div>
@@ -1859,12 +1895,12 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 pt-2">
-                  {pageInfoError && <p role="alert" className="text-xs text-rose-400">{pageInfoError}</p>}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-neutral-800">
+                  {pageInfoError && <p role="alert" className="text-xs text-rose-400 flex-1 min-w-0">{pageInfoError}</p>}
                   <button
                     type="submit"
                     disabled={isSavingPageInfo}
-                    className="px-6 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-tactical font-black text-xs uppercase cursor-pointer shadow-lg flex items-center gap-2"
+                    className="ml-auto px-6 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-tactical font-black text-xs uppercase cursor-pointer shadow-lg flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <Save className="h-4 w-4" />
                     <span>{isSavingPageInfo ? 'SAVING...' : 'SAVE & PUBLISH PAGE SPECIFICATIONS'}</span>
@@ -1876,7 +1912,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
             {/* SUBTAB 2: PROMOTION PAGES & 20 RANKS REQUIREMENTS EDITOR */}
             {pageInfoSubTab === 'promotions' && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-xs font-data uppercase text-amber-400 font-bold">
                     EDIT 20 USSF RANKS & QUALIFICATION REQUIREMENTS
                   </h4>
@@ -1937,7 +1973,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setEditingRankLevel(null)}
-                                className="px-3 py-1 rounded bg-neutral-800 text-neutral-400"
+                                className="px-3 py-1 rounded bg-neutral-800 text-neutral-400 cursor-pointer hover:text-white"
                               >
                                 Cancel
                               </button>
@@ -1958,7 +1994,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                                   setPageInfoSaved(true);
                                   setTimeout(() => setPageInfoSaved(false), 4000);
                                 }}
-                                className="px-4 py-1 rounded bg-emerald-500 text-neutral-950 font-bold uppercase"
+                                className="px-4 py-1 rounded bg-emerald-500 text-neutral-950 font-bold uppercase cursor-pointer disabled:opacity-60"
                               >
                                 Save Rank
                               </button>
@@ -2799,8 +2835,8 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
               </h3>
             </div>
 
-            <p role="status" className="border border-amber-700/60 bg-amber-950/30 p-3 text-xs text-amber-200">
-              Requests are visible, but review actions are unavailable until the server can authenticate administrators.
+            <p role="status" className="border border-emerald-700/50 bg-emerald-950/30 p-3 text-xs text-emerald-200">
+              Signed in with your administrator session. Approve or deny each request below - decisions are saved to the shared database and persist after refresh.
             </p>
 
             <div className="space-y-3">
@@ -2836,19 +2872,15 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => onResolveLinkRequest(req.id, false)}
-                          disabled
-                          title="Server-authenticated administrative review is not configured"
                           className="px-3 py-1 rounded bg-rose-950 text-rose-300 text-xs font-tactical font-bold uppercase hover:bg-rose-900 cursor-pointer"
                         >
-                          DENY (UNAVAILABLE)
+                          DENY
                         </button>
                         <button
                           onClick={() => onResolveLinkRequest(req.id, true)}
-                          disabled
-                          title="Server-authenticated administrative review is not configured"
                           className="px-3 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-neutral-950 text-xs font-tactical font-bold uppercase cursor-pointer"
                         >
-                          APPROVE (UNAVAILABLE)
+                          APPROVE
                         </button>
                       </div>
                     ) : (

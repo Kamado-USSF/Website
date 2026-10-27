@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { ForgotPasswordRequest, USSFMember, KAMADO_ADMIN_ACCOUNT } from '../data/ussfData';
 import { tacticalAudio } from '../utils/audioSynth';
+import { api } from '../services/api';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -144,7 +145,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage(null);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     tacticalAudio.playTacticalClick();
     const cleanName = accountName.trim();
@@ -156,43 +157,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
-    // 0. Master High Command Admin Credentials for Kamado
+    // 0. Administrator sign-in is validated by the server, which answers with an
+    // HttpOnly session cookie used automatically by every protected admin request.
     if (cleanName.toLowerCase() === 'kamado' || cleanName.toLowerCase() === 'sf-001') {
-      if (cleanPass !== 'FeelPainAcceptPainAndKnowPain') {
-        setErrorMessage('Invalid credentials. High Command password does not match.');
-        tacticalAudio.playAlertWarning();
-        return;
-      }
-      const existingMember = members.find(m => m.name.toLowerCase() === 'kamado' || m.cid === 'SF-001');
-      const activeAdminUser: USSFMember = existingMember ? {
-        ...existingMember,
-        isAdmin: true,
-        isOwner: true,
-        isMember: true,
-        isApplicant: false,
-        rank: existingMember.rank || 'High Commander',
-        rankLevel: existingMember.rankLevel || 20,
-        rankCategory: 'High Command',
-        specialRoles: ['Administrator', 'Promotion Manager', 'Financial Manager', 'Account Recovery Manager']
-      } : KAMADO_ADMIN_ACCOUNT;
-
-      // Cache credential in local storage
+      setErrorMessage(null);
       try {
-        let savedAcc = JSON.parse(localStorage.getItem('ussf_registered_accounts') || '[]');
-        if (!savedAcc.some((a: any) => (a.username || '').toLowerCase() === 'kamado')) {
-          savedAcc.push({
-            id: activeAdminUser.id,
-            username: 'kamado',
-            password: 'FeelPainAcceptPainAndKnowPain',
-            user: activeAdminUser
-          });
-          localStorage.setItem('ussf_registered_accounts', JSON.stringify(savedAcc));
-        }
-      } catch {}
+        const adminMember = await api.loginAdmin(cleanName, cleanPass);
+        const existingMember = members.find(m => m.id === adminMember.id || m.cid === adminMember.cid)
+          || members.find(m => (m.name || '').toLowerCase() === 'kamado' || m.cid === 'SF-001');
+        const activeAdminUser: USSFMember = {
+          ...(existingMember || KAMADO_ADMIN_ACCOUNT),
+          ...adminMember,
+          rank: adminMember.rank || 'High Commander',
+          rankLevel: adminMember.rankLevel || 20,
+          isAdmin: true,
+          isOwner: true,
+          isMember: true,
+          isApplicant: false,
+          rankCategory: 'High Command',
+          specialRoles: ['Administrator', 'Promotion Manager', 'Financial Manager', 'Account Recovery Manager']
+        };
 
-      tacticalAudio.playRadioSquelch();
-      onLogin(activeAdminUser, keepMeLoggedIn);
-      onClose();
+        tacticalAudio.playRadioSquelch();
+        onLogin(activeAdminUser, keepMeLoggedIn);
+        onClose();
+      } catch (err: any) {
+        setErrorMessage(err?.message || 'Administrator sign-in failed. Please try again.');
+        tacticalAudio.playAlertWarning();
+      }
       return;
     }
 

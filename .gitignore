@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 data/backups/
+# Local development session signing secret (server-generated, never commit)
+data/.session-secret

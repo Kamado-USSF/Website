@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { requireAdminToken } from '../../lib/auth.js';
+import { requireAdminSession } from '../../lib/auth.js';
 import { getSql, sendApiError } from '../../lib/db.js';
 import { validateAsset } from '../../lib/validation.js';
 
@@ -7,7 +7,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const id = typeof req.query.id === 'string' ? req.query.id : '';
   if (!id) return res.status(400).json({ success: false, error: 'Asset ID is required.' });
   if (req.method !== 'PUT' && req.method !== 'DELETE') return res.status(405).json({ success: false, error: 'Method not allowed.' });
-  if (!requireAdminToken(req, res)) return;
+  if (!requireAdminSession(req, res)) return;
 
   try {
     const sql = await getSql();
