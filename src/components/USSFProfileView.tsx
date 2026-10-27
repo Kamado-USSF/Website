@@ -82,7 +82,23 @@ export const USSFProfileView: React.FC<USSFProfileViewProps> = ({
     setBio(currentUser.bio || '');
     setSignature(currentUser.signature || '');
     setPresenceStatus(currentUser.presenceStatus || 'Online');
-  }, [currentUser]);
+    // NOTE: deps are the individual profile values, not the currentUser object:
+    // the parent creates a new object identity on every 4-second poll, which used
+    // to reset in-progress edits (and snap an equipped frame back to the server's
+    // current value) mid-interaction.
+  }, [
+    currentUser?.name,
+    currentUser?.callsign,
+    currentUser?.avatarUrl,
+    currentUser?.avatarFrame,
+    currentUser?.namecard,
+    currentUser?.namecardBgUrl,
+    currentUser?.nameStyle,
+    currentUser?.customCursor,
+    currentUser?.bio,
+    currentUser?.signature,
+    currentUser?.presenceStatus
+  ]);
 
   // File Upload Handlers with Canvas Compression (Prevents QuotaExceededError & Black Screen)
   const handleAvatarFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -602,6 +618,9 @@ export const USSFProfileView: React.FC<USSFProfileViewProps> = ({
                         if (isUnlocked) {
                           tacticalAudio.playTacticalClick();
                           setAvatarFrame(frame.name);
+                          // Persist immediately so the equipped frame is visible to
+                          // other users without waiting for the Save button.
+                          onUpdateProfile({ avatarFrame: frame.name });
                           setStatusNotice(`Frame equipped: ${frame.name}`);
                           setTimeout(() => setStatusNotice(null), 3000);
                         } else {
@@ -649,6 +668,7 @@ export const USSFProfileView: React.FC<USSFProfileViewProps> = ({
                         onClick={() => {
                           tacticalAudio.playTacticalClick();
                           setAvatarFrame(cosmetic.name);
+                          onUpdateProfile({ avatarFrame: cosmetic.name });
                           setStatusNotice(`Cosmetic frame equipped: ${cosmetic.name}`);
                           setTimeout(() => setStatusNotice(null), 3000);
                         }}

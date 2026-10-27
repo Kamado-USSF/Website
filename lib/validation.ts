@@ -1,6 +1,8 @@
 import type { AccountLinkRequest, RecruitmentApplication, USSFAssetItem } from '../src/data/ussfData';
 
-type GroupInfo = typeof import('../src/data/ussfData').USSF_GROUP_INFO;
+type GroupInfo = typeof import('../src/data/ussfData').USSF_GROUP_INFO & {
+  customRanks?: import('../src/data/ussfData').RankDefinition[];
+};
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -11,13 +13,52 @@ export function validateGroupInfo(input: unknown): ValidationResult<Partial<Grou
   const body = input as Record<string, unknown>;
   const editableFields = [
     'name', 'level', 'founder', 'coFounder', 'commander', 'leaders', 'motto',
-    'activeSince', 'tagUsage', 'commandCenters', 'skinsAvailable', 'carShadersAvailable'
+    'activeSince', 'tagUsage', 'commandCenters', 'skinsAvailable', 'carShadersAvailable',
+    'customRanks'
   ] as const;
   const updates: Record<string, unknown> = {};
   for (const field of editableFields) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
     const value = body[field];
-    if (field === 'skinsAvailable' || field === 'carShadersAvailable') {
+    if (field === 'customRanks') {
+      if (!Array.isArray(value) || value.length < 1 || value.length > 40) {
+        return { ok: false, error: 'customRanks must be an array of 1 to 40 rank definitions.' };
+      }
+      const ranks: Array<Record<string, unknown>> = [];
+      for (const raw of value) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          return { ok: false, error: 'Each custom rank must be a JSON object.' };
+        }
+        const rank = raw as Record<string, unknown>;
+        const name = String(rank.name ?? '').trim();
+        const level = Number(rank.level);
+        const order = Number(rank.order);
+        const requiredDays = Number(rank.requiredDays);
+        const requiredPoints = Number(rank.requiredPoints);
+        const badgeColor = String(rank.badgeColor ?? '').trim();
+        const unlockedFrame = String(rank.unlockedFrame ?? '').trim();
+        const unlockedNamecard = String(rank.unlockedNamecard ?? '').trim();
+        if (!name || name.length > 120 || !Number.isInteger(level) || level < 1 || level > 99 ||
+            !Number.isFinite(order) || !Number.isFinite(requiredDays) || requiredDays < 0 ||
+            !Number.isFinite(requiredPoints) || requiredPoints < 0 ||
+            !badgeColor || badgeColor.length > 40 ||
+            !unlockedFrame || unlockedFrame.length > 120 ||
+            !unlockedNamecard || unlockedNamecard.length > 120) {
+          return { ok: false, error: 'One or more custom rank definitions are invalid.' };
+        }
+        const sanitized: Record<string, unknown> = {
+          level, name, order, requiredDays, requiredPoints, badgeColor, unlockedFrame, unlockedNamecard
+        };
+        if (typeof rank.category === 'string' && rank.category.trim()) {
+          sanitized.category = rank.category.trim().slice(0, 60);
+        }
+        if (typeof rank.description === 'string' && rank.description.trim()) {
+          sanitized.description = rank.description.trim().slice(0, 600);
+        }
+        ranks.push(sanitized);
+      }
+      updates.customRanks = ranks;
+    } else if (field === 'skinsAvailable' || field === 'carShadersAvailable') {
       if (!Array.isArray(value) || value.length > 100 || value.some(item => typeof item !== 'string' || item.length > 120)) {
         return { ok: false, error: `${field} must be an array of strings.` };
       }

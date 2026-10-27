@@ -47,6 +47,7 @@ import {
   INITIAL_SQUAD_GROUPS,
   USSF_GROUP_INFO,
   USSF_RANKS,
+  RankDefinition,
   DiscordPresenceStatus,
   PromotionHistoryEntry,
   PromotionRequest,
@@ -78,7 +79,7 @@ import { Check, ShieldAlert, UserPlus, Lock } from 'lucide-react';
 import { tacticalAudio } from './utils/audioSynth';
 import { applyLanguageToDocument } from './utils/translations';
 import { validatePromotionEligibility } from './utils/promotionValidator';
-import { api, setUnauthorizedHandler } from './services/api';
+import { api, setUnauthorizedHandler, GroupInfoShape } from './services/api';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<USSFView>('home');
@@ -153,7 +154,10 @@ export default function App() {
   const [loginRewards, setLoginRewards] = useState<DailyLoginReward[]>(DAILY_LOGIN_REWARDS_7);
   const [pendingLoginClaims, setPendingLoginClaims] = useState<PendingLoginRewardClaim[]>([]);
   const [promotionRequests, setPromotionRequests] = useState<PromotionRequest[]>([]);
-  const [groupInfo, setGroupInfo] = useState(USSF_GROUP_INFO);
+  const [groupInfo, setGroupInfo] = useState<GroupInfoShape>(USSF_GROUP_INFO);
+  // Rank definitions as edited in the studio; published through groupInfo.customRanks
+  // so every visitor sees the same hierarchy the admin saved.
+  const [ranks, setRanks] = useState<RankDefinition[]>(USSF_RANKS);
   const [preselectedQuantity, setPreselectedQuantity] = useState<number>(1);
   const [birthdayGifts, setBirthdayGifts] = useState<BirthdayGift[]>([]);
   const [birthdayTargetMember, setBirthdayTargetMember] = useState<USSFMember | null>(null);
@@ -289,23 +293,44 @@ export default function App() {
         if (state.adminEvents) setAdminEvents(state.adminEvents);
         if (state.loginRewards) setLoginRewards(state.loginRewards);
         if (clientClaimsAdmin && state.pendingLoginClaims) setPendingLoginClaims(state.pendingLoginClaims);
-        if (state.groupInfo) setGroupInfo(state.groupInfo);
+        if (state.groupInfo) {
+          const mergedGroupInfo: GroupInfoShape = { ...USSF_GROUP_INFO, ...state.groupInfo };
+          setGroupInfo(mergedGroupInfo);
+          const serverRanks = state.groupInfo.customRanks;
+          if (Array.isArray(serverRanks) && serverRanks.length > 0) setRanks(serverRanks);
+        }
         if (clientClaimsAdmin && state.birthdayGifts) setBirthdayGifts(state.birthdayGifts);
         if (clientClaimsAdmin && state.squadGroups) setSquadGroups(state.squadGroups);
         if (state.achievements) setAchievements(state.achievements);
         if (state.customAssets) setCustomAssets(state.customAssets);
 
-        // Keep current user updated with server data while preserving selected presence
-        if (clientClaimsAdmin) setCurrentUser(prevUser => {
+        // Keep the signed-in user aligned with server data (roster upgrades after an
+        // approved link/application, namecard/avatar edits, rank changes) while
+        // preserving the locally selected presence. Runs for every signed-in user,
+        // not only administrators, so newly accepted members gain their features live.
+        setCurrentUser(prevUser => {
           if (!prevUser) return null;
-          const fresh = (state.members || []).find(m => m.id === prevUser.id || m.cid === prevUser.cid);
-          if (fresh) {
-            const preservedPresence = (prevUser.presenceStatus === 'DND' || prevUser.presenceStatus === 'Idle')
-              ? prevUser.presenceStatus
-              : (fresh.presenceStatus || 'Online');
-            return { ...fresh, presenceStatus: preservedPresence };
-          }
-          return prevUser;
+          const roster = state.members || [];
+          const prevAccount = (prevUser.accountName || '').trim().toLowerCase();
+          const prevName = (prevUser.name || '').trim().toLowerCase();
+          const fresh =
+            roster.find(m => m.id === prevUser.id) ||
+            (prevUser.cid && prevUser.cid !== 'CIV-UNASSIGNED' && prevUser.cid !== 'SF-CIV'
+              ? roster.find(m => m.cid === prevUser.cid)
+              : undefined) ||
+            (prevAccount
+              ? roster.find(m => (m.accountName || '').trim().toLowerCase() === prevAccount)
+              : undefined) ||
+            (!prevUser.isMember && prevName
+              ? roster.find(m => m.isMember && !m.isApplicant && (m.name || '').trim().toLowerCase() === prevName)
+              : undefined);
+          if (!fresh) return prevUser;
+          const preservedPresence = (prevUser.presenceStatus === 'DND' || prevUser.presenceStatus === 'Idle')
+            ? prevUser.presenceStatus
+            : (fresh.presenceStatus || 'Online');
+          // Spread over the previous session so fields the public projection omits
+          // (account name, stats) survive a non-admin state read.
+          return { ...prevUser, ...fresh, presenceStatus: preservedPresence };
         });
       } catch (err) {
         // Silently tolerate transient network delays
@@ -707,7 +732,12 @@ export default function App() {
   };
 
   const handleAddRecruitmentApp = async (app: RecruitmentApplication) => {
-    const saved = await api.submitApplication(app);
+    const saved = await api.submitApplication({
+      ...app,
+      // Bind the application to the submitting website account so acceptance can
+      // link the new roster record to this login and grant full features.
+      accountName: app.accountName || currentUser?.accountName || currentUser?.name || undefined
+    });
     setApplications(prev => [saved, ...prev.filter(a => a.id !== saved.id)]);
     showToast('Enlistment application submitted to High Command and saved to authoritative database.');
   };
@@ -726,6 +756,28 @@ export default function App() {
       return r;
     }));
     showToast(approved ? 'Password reset token approved & issued.' : 'Request dismissed.');
+  };
+
+  // Admin accepts/denies an enlistment application; acceptance enlists the
+  // applicant on the server (roster record + account link) so they appear in
+  // Rank & Roster with financial/promotion features immediately.
+  const handleReviewApplication = async (id: string, approved: boolean) => {
+    try {
+      const reviewer = currentUser?.callsign || currentUser?.name || 'Administrator';
+      const status = approved ? 'Accepted' : 'Denied';
+      const updated = await api.reviewApplication(id, status, reviewer, approved ? undefined : 'Rejected during administrative review.');
+      setApplications(prev => prev.map(a => (a.id === id ? (updated || a) : a)));
+      showToast(
+        approved
+          ? `Application accepted for ${updated?.applicantName || 'applicant'} — added to the active roster with full website features.`
+          : `Application denied for ${updated?.applicantName || 'applicant'}.`
+      );
+      const state = adminSessionActive ? await api.getAdminState() : await api.getState();
+      if (state.members) setMembers(state.members);
+      if (state.applications) setApplications(state.applications);
+    } catch (err: any) {
+      showToast(`Error reviewing enlistment application: ${err?.message || 'Failed to update'}`);
+    }
   };
 
   const handleResolveLinkRequest = async (id: string, approved: boolean) => {
@@ -848,7 +900,7 @@ export default function App() {
 
     const currentLevel = targetMember.rankLevel || 1;
     const targetLevel = currentLevel + 1;
-    const targetRank = USSF_RANKS.find(r => r.level === targetLevel);
+    const targetRank = ranks.find(r => r.level === targetLevel);
     if (!targetRank) return { success: false, message: 'Maximum rank echelon reached.' };
 
     const validation = validatePromotionEligibility(targetMember, targetLevel);
@@ -912,7 +964,7 @@ export default function App() {
   };
 
   const handleUpdateMemberRank = async (memberId: string, newRank: string, newLevel: number, note?: string) => {
-    const targetRankDef = USSF_RANKS.find(r => r.name === newRank || r.level === newLevel);
+    const targetRankDef = ranks.find(r => r.name === newRank || r.level === newLevel);
     const newCategory = targetRankDef?.category || (newLevel >= 16 ? 'High Command' : newLevel >= 11 ? 'Field Command' : 'Special Operator');
 
     const newHistoryEntry: PromotionHistoryEntry = {
@@ -1005,14 +1057,28 @@ export default function App() {
     }
   };
 
-  const handleUpdateGroupInfo = async (updated: Partial<typeof USSF_GROUP_INFO>) => {
+  const handleUpdateGroupInfo = async (updated: Partial<GroupInfoShape>) => {
     try {
       const saved = await api.updateGroupInfo(updated);
-      setGroupInfo(saved);
+      setGroupInfo({ ...USSF_GROUP_INFO, ...saved });
       showToast('Group specifications saved and published globally.');
     } catch (err: any) {
       showToast(`Error updating group specs: ${err?.message}`);
       throw err;
+    }
+  };
+
+  // Publish edited rank definitions through groupInfo so every visitor and the
+  // Career/Admin/roster pages render the same hierarchy.
+  const handleUpdateRanks = async (updated: RankDefinition[]) => {
+    setRanks(updated);
+    try {
+      const saved = await api.updateGroupInfo({ customRanks: updated });
+      setGroupInfo({ ...USSF_GROUP_INFO, ...saved });
+      localStorage.setItem('ussf_custom_ranks', JSON.stringify(updated));
+      showToast('Rank hierarchy saved and published across the site.');
+    } catch (err: any) {
+      showToast(`Error updating ranks: ${err?.message || 'Failed to save'}`);
     }
   };
 
@@ -1070,6 +1136,7 @@ export default function App() {
           activePersonnelCount={members.filter(m => m.status === 'Active Duty').length}
           onOpenPhpExport={() => setIsPhpExportOpen(true)}
           currentUser={currentUser}
+          groupInfo={groupInfo}
           onOpenAuth={() => setIsAuthModalOpen(true)}
           onLogout={handleLogout}
           unreadNotificationCount={notifications.filter(n => !n.isRead).length}
@@ -1192,6 +1259,7 @@ export default function App() {
               >
                 <USSFCareerView
                   currentUser={currentUser}
+                  ranks={ranks}
                   members={members}
                   events={adminEvents}
                   onSubmitPromotionRequest={handleSubmitPromotionRequest}
@@ -1268,6 +1336,7 @@ export default function App() {
                     onResolveForgotPw={handleResolveForgotPw}
                     linkRequests={linkRequests}
                     onResolveLinkRequest={handleResolveLinkRequest}
+                    onReviewApplication={handleReviewApplication}
                     loginRewards={loginRewards}
                     onUpdateLoginRewards={setLoginRewards}
                     members={members}
@@ -1287,6 +1356,8 @@ export default function App() {
                     onApproveLoginClaim={handleApproveLoginClaim}
                     groupInfo={groupInfo}
                     onUpdateGroupInfo={handleUpdateGroupInfo}
+                    ranks={ranks}
+                    onUpdateRanks={handleUpdateRanks}
                     achievements={achievements}
                     onUpdateAchievements={handleUpdateAchievements}
                     assets={customAssets}
@@ -1367,7 +1438,7 @@ export default function App() {
                 exit="exit"
                 className="w-full"
               >
-                <USSFGroupInfoView onNavigate={handleNavigate} />
+                <USSFGroupInfoView onNavigate={handleNavigate} groupInfo={groupInfo} />
               </motion.div>
             )}
 

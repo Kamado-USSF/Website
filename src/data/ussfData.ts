@@ -444,6 +444,8 @@ export interface AccountLinkRequest {
 export interface RecruitmentApplication {
   id: string;
   applicantName: string;
+  /** Website account username of the applicant (set when submitted while signed in). */
+  accountName?: string;
   discordTag: string;
   age: number;
   playtimeHours: number;

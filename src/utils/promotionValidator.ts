@@ -27,13 +27,15 @@ export interface PromotionEligibilityResult {
  */
 export function validatePromotionEligibility(
   member: USSFMember,
-  customTargetLevel?: number
+  customTargetLevel?: number,
+  rankList: RankDefinition[] = USSF_RANKS
 ): PromotionEligibilityResult {
   const currentLevel = member.rankLevel || 1;
   const targetLevel = customTargetLevel !== undefined ? customTargetLevel : currentLevel + 1;
 
-  // Find current and target rank definitions
-  const currentRankDef = USSF_RANKS.find(r => r.level === currentLevel) || {
+  // Find current and target rank definitions (rankList lets the caller use the
+  // admin-published hierarchy instead of the static defaults)
+  const currentRankDef = rankList.find(r => r.level === currentLevel) || {
     level: currentLevel,
     name: member.rank || 'Recruit',
     order: 200,
@@ -44,7 +46,7 @@ export function validatePromotionEligibility(
     description: ''
   };
 
-  const targetRankDef = USSF_RANKS.find(r => r.level === targetLevel) || {
+  const targetRankDef = rankList.find(r => r.level === targetLevel) || {
     level: targetLevel,
     name: `Tier ${targetLevel} Officer`,
     order: 0,

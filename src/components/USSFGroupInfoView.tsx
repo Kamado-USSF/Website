@@ -9,11 +9,16 @@ import { USSFView } from './USSFHeader';
 
 interface USSFGroupInfoViewProps {
   onNavigate: (view: USSFView) => void;
+  groupInfo?: typeof USSF_GROUP_INFO;
 }
 
 export const USSFGroupInfoView: React.FC<USSFGroupInfoViewProps> = ({
-  onNavigate
+  onNavigate,
+  groupInfo
 }) => {
+  // Admin studio edits are published through state.groupInfo; fall back to the
+  // static defaults for fields never edited.
+  const info = { ...USSF_GROUP_INFO, ...(groupInfo || {}) };
   return (
     <div className="w-full bg-[#080a08] text-neutral-100 min-h-screen pb-16 font-sans">
       {/* High-Impact Clear Visible Headquarters Banner */}
@@ -32,19 +37,19 @@ export const USSFGroupInfoView: React.FC<USSFGroupInfoViewProps> = ({
         <div className="relative z-10 mx-auto max-w-7xl px-4 py-12 sm:py-16 sm:px-6 lg:px-8 w-full">
           <div className="flex flex-wrap items-center gap-2 text-xs font-data uppercase tracking-widest text-amber-400 mb-2">
             <Shield className="h-4 w-4" />
-            <span>ORGANIZATION SPECIFICATIONS // L4 POLICE FORCE GROUP</span>
+            <span>ORGANIZATION SPECIFICATIONS // {info.level} POLICE FORCE GROUP</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl md:text-6xl font-black font-tactical uppercase tracking-tight text-white drop-shadow-lg">
-            SPECIAL FORCES
+            {info.name}
           </h1>
 
           <div className="border-l-2 border-amber-500 pl-4 py-2 mt-4 max-w-2xl bg-black/60 backdrop-blur rounded-r">
             <p className="text-base sm:text-lg font-sans italic font-bold text-amber-400">
-              "{USSF_GROUP_INFO.motto}"
+              "{info.motto}"
             </p>
             <p className="text-xs font-data text-neutral-400 uppercase mt-1">
-              Active Since: June 30, 2019 · CIT2 Law Enforcement Police Force Group
+              Active Since: {info.activeSince} · CIT2 Law Enforcement Police Force Group
             </p>
           </div>
         </div>
@@ -55,36 +60,36 @@ export const USSFGroupInfoView: React.FC<USSFGroupInfoViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 font-data text-xs">
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">ORGANIZATION NAME & LEVEL</span>
-            <div className="text-lg font-tactical font-black text-white">{USSF_GROUP_INFO.name}</div>
-            <div className="text-emerald-400 font-bold">Group Level: {USSF_GROUP_INFO.level}</div>
+            <div className="text-lg font-tactical font-black text-white">{info.name}</div>
+            <div className="text-emerald-400 font-bold">Group Level: {info.level}</div>
           </div>
 
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">FOUNDER & CO-FOUNDER</span>
-            <div className="text-neutral-200 font-bold">{USSF_GROUP_INFO.founder}</div>
-            <div className="text-neutral-300 font-semibold">{USSF_GROUP_INFO.coFounder}</div>
+            <div className="text-neutral-200 font-bold">{info.founder}</div>
+            <div className="text-neutral-300 font-semibold">{info.coFounder}</div>
           </div>
 
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">GROUP LEADERSHIP STAFF</span>
-            <div className="text-amber-400 font-bold">{USSF_GROUP_INFO.leaders}</div>
+            <div className="text-amber-400 font-bold">{info.leaders}</div>
           </div>
 
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">TAG USAGE & ALLIANCE</span>
-            <div className="text-neutral-200 font-bold">Standard Tag: <span className="text-cyan-400">{USSF_GROUP_INFO.tagUsage}</span></div>
-            <div className="text-neutral-400">Alliance: {USSF_GROUP_INFO.alliance}</div>
+            <div className="text-neutral-200 font-bold">Standard Tag: <span className="text-cyan-400">{info.tagUsage}</span></div>
+            <div className="text-neutral-400">Alliance: {info.alliance}</div>
           </div>
 
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">ORGANIZATION COLOR & HEX</span>
-            <div className="text-neutral-200 font-bold">{USSF_GROUP_INFO.organizationColor}</div>
-            <div className="text-amber-400 font-bold">Hex: {USSF_GROUP_INFO.hexColor} (Pure Tactical Black)</div>
+            <div className="text-neutral-200 font-bold">{info.organizationColor}</div>
+            <div className="text-amber-400 font-bold">Hex: {info.hexColor} (Pure Tactical Black)</div>
           </div>
 
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-2">
             <span className="text-neutral-500 uppercase text-[10px] block">COMMAND CENTERS</span>
-            <div className="text-neutral-200 font-bold">{USSF_GROUP_INFO.commandCenters}</div>
+            <div className="text-neutral-200 font-bold">{info.commandCenters}</div>
             <div className="text-emerald-400">Operating in LS + LV (Ground, Sea, Air)</div>
           </div>
         </div>
@@ -94,10 +99,10 @@ export const USSFGroupInfoView: React.FC<USSFGroupInfoViewProps> = ({
           <div className="p-5 rounded-xl border border-neutral-800 bg-neutral-900/70 space-y-3">
             <div className="flex items-center gap-2 text-amber-400 font-bold text-xs uppercase border-b border-neutral-800 pb-2">
               <UserCheck className="h-4 w-4" />
-              <span>OFFICIAL SKINS AVAILABLE ({USSF_GROUP_INFO.skinsAvailable.length})</span>
+              <span>OFFICIAL SKINS AVAILABLE ({info.skinsAvailable.length})</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {USSF_GROUP_INFO.skinsAvailable.map(skin => (
+              {info.skinsAvailable.map(skin => (
                 <span key={skin} className="px-3 py-1 rounded bg-neutral-950 border border-neutral-700 text-neutral-200 font-mono">
                   Skin ID: {skin}
                 </span>
@@ -111,7 +116,7 @@ export const USSFGroupInfoView: React.FC<USSFGroupInfoViewProps> = ({
               <span>CUSTOM CAR SHADERS AVAILABLE</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {USSF_GROUP_INFO.carShadersAvailable.map(car => (
+              {info.carShadersAvailable.map(car => (
                 <span key={car} className="px-3 py-1 rounded bg-neutral-950 border border-neutral-700 text-emerald-300 font-mono font-bold">
                   {car}
                 </span>

@@ -6,6 +6,7 @@ import { validatePromotionEligibility } from '../utils/promotionValidator';
 
 interface USSFCareerViewProps {
   currentUser?: USSFMember | null;
+  ranks?: RankDefinition[];
   members?: USSFMember[];
   events?: AdminEvent[];
   onSubmitPromotionRequest?: (req: PromotionRequest) => void;
@@ -15,6 +16,7 @@ interface USSFCareerViewProps {
 
 export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
   currentUser,
+  ranks = USSF_RANKS,
   members = [],
   events = [],
   onSubmitPromotionRequest,
@@ -89,23 +91,23 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
     : 1;
 
   // Determine qualified rank based on input days and points for Calculator
-  const qualifiedRank = [...USSF_RANKS]
+  const qualifiedRank = [...ranks]
     .sort((a, b) => b.level - a.level)
-    .find(r => inputDays >= r.requiredDays && inputPoints >= r.requiredPoints) || USSF_RANKS[USSF_RANKS.length - 1];
+    .find(r => inputDays >= r.requiredDays && inputPoints >= r.requiredPoints) || ranks[ranks.length - 1];
 
   // Promotion Calculation logic
-  const currentRankDef = USSF_RANKS.find(r => r.name === effectiveMember.rank) || USSF_RANKS.find(r => r.level === effectiveMember.rankLevel) || USSF_RANKS[USSF_RANKS.length - 1];
-  const targetRankDef = USSF_RANKS.find(r => r.level === selectedTargetRankLevel) || USSF_RANKS[0];
+  const currentRankDef = ranks.find(r => r.name === effectiveMember.rank) || ranks.find(r => r.level === effectiveMember.rankLevel) || ranks[ranks.length - 1];
+  const targetRankDef = ranks.find(r => r.level === selectedTargetRankLevel) || ranks[0];
 
   // Calculate points cost: sum of incremental requirements or target rank point requirement
-  const intermediateRanks = USSF_RANKS.filter(r => r.level > currentRankDef.level && r.level <= targetRankDef.level);
+  const intermediateRanks = ranks.filter(r => r.level > currentRankDef.level && r.level <= targetRankDef.level);
   const pointsCost = intermediateRanks.reduce((sum, r) => sum + (r.requiredPoints || 100), 0) || (targetRankDef.requiredPoints || 300);
   const memberPoints = effectiveMember.promotionPoints || 0; // Strictly zero points for fresh accounts
   const remainingPoints = memberPoints - pointsCost;
 
   // Real dual promotion validation: points and qualifying calendar service days in current rank
   const validation = effectiveMember.rankLevel > 0
-    ? validatePromotionEligibility(effectiveMember, targetRankDef.level)
+    ? validatePromotionEligibility(effectiveMember, targetRankDef.level, ranks)
     : {
         eligible: false,
         currentServiceDays: 0,
@@ -135,7 +137,7 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
 
   const nextEligibleRank = React.useMemo(() => {
     const curLevel = effectiveMember.rankLevel || 1;
-    return USSF_RANKS.find(r => r.level > curLevel && (r.requiredDays > 0 || r.requiredPoints > 0));
+    return ranks.find(r => r.level > curLevel && (r.requiredDays > 0 || r.requiredPoints > 0));
   }, [effectiveMember.rankLevel]);
 
   const handlePromotionSubmit = (e: React.FormEvent) => {
@@ -448,7 +450,7 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
                     onChange={(e) => setSelectedTargetRankLevel(Number(e.target.value))}
                     className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2.5 text-neutral-200 text-xs focus:outline-none focus:border-amber-400"
                   >
-                    {USSF_RANKS.filter(r => r.level > effectiveMember.rankLevel).map(r => (
+                    {ranks.filter(r => r.level > effectiveMember.rankLevel).map(r => (
                       <option key={r.level} value={r.level}>
                         Level {r.level}: {r.name} (Req: {r.requiredPoints.toLocaleString()} pts / {r.requiredDays} days)
                       </option>
@@ -571,7 +573,7 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {USSF_RANKS.map((rank) => (
+              {ranks.map((rank) => (
                 <div
                   key={rank.level}
                   className="rounded-xl border border-neutral-800 bg-neutral-900/50 p-5 hover:border-neutral-700 transition-all group relative overflow-hidden"
@@ -874,7 +876,7 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
 
                     {/* Next Rank Deficit */}
                     {(() => {
-                      const nextRank = [...USSF_RANKS].sort((a, b) => a.level - b.level).find(r => r.level > qualifiedRank.level && (r.requiredDays > 0 || r.requiredPoints > 0));
+                      const nextRank = [...ranks].sort((a, b) => a.level - b.level).find(r => r.level > qualifiedRank.level && (r.requiredDays > 0 || r.requiredPoints > 0));
                       if (!nextRank) {
                         return (
                           <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs font-data">
@@ -937,7 +939,7 @@ export const USSFCareerView: React.FC<USSFCareerViewProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-800/60">
-                    {[...USSF_RANKS].sort((a, b) => b.level - a.level).map(rank => {
+                    {[...ranks].sort((a, b) => b.level - a.level).map(rank => {
                       const isSpecialAppointment = rank.requiredDays === 0 && rank.requiredPoints === 0 && rank.level > 1;
                       const hasDays = inputDays >= rank.requiredDays;
                       const hasPoints = inputPoints >= rank.requiredPoints;

@@ -207,8 +207,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
+      // If this website account has been approved onto the roster (account link
+      // or accepted application), sign in as the authoritative roster member so
+      // every member feature — rank, roster entry, financial claims, promotions —
+      // is active instead of the stale civilian record saved at signup.
+      const normalizedUsername = cleanName.toLowerCase();
+      const linkedMember = members.find(m =>
+        m.isMember && !m.isApplicant &&
+        (m.accountName || '').trim().toLowerCase() === normalizedUsername
+      ) || (!matchedAccount.user?.isMember
+        ? members.find(m =>
+            m.isMember && !m.isApplicant &&
+            (m.name || '').trim().toLowerCase() === String(matchedAccount.user?.name || '').trim().toLowerCase()
+          )
+        : undefined);
+
       tacticalAudio.playRadioSquelch();
-      onLogin(matchedAccount.user, keepMeLoggedIn);
+      onLogin(
+        linkedMember
+          ? { ...linkedMember, accountName: linkedMember.accountName || matchedAccount.username || cleanName }
+          : matchedAccount.user,
+        keepMeLoggedIn
+      );
       onClose();
       return;
     }

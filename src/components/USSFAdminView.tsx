@@ -46,6 +46,7 @@ interface USSFAdminViewProps {
   onResolveForgotPw: (id: string, approved: boolean) => void;
   linkRequests?: AccountLinkRequest[];
   onResolveLinkRequest: (id: string, approved: boolean) => void;
+  onReviewApplication?: (id: string, approved: boolean) => void;
   loginRewards?: DailyLoginReward[];
   onUpdateLoginRewards: (rewards: DailyLoginReward[]) => void;
   members?: USSFMember[];
@@ -86,6 +87,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
   onResolveForgotPw,
   linkRequests = [],
   onResolveLinkRequest,
+  onReviewApplication,
   loginRewards = [],
   onUpdateLoginRewards,
   members = [],
@@ -183,6 +185,11 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
 
   // Promotion Pages & Ranks Requirements Editor State
   const [editableRanksList, setEditableRanksList] = useState(ranks);
+  // Re-sync when the published hierarchy changes (saved by another session, or
+  // delivered from the server's customRanks).
+  useEffect(() => {
+    setEditableRanksList(current => JSON.stringify(current) === JSON.stringify(ranks) ? current : ranks);
+  }, [ranks]);
   const [editingRankLevel, setEditingRankLevel] = useState<number | null>(null);
   const [editRankName, setEditRankName] = useState('');
   const [editRankPoints, setEditRankPoints] = useState(0);
@@ -810,6 +817,30 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                     </div>
                     <p className="text-xs text-neutral-300 whitespace-pre-wrap">{application.lawExperience}</p>
                     {application.reviewerNotes && <p className="text-xs text-neutral-400">Review notes: {application.reviewerNotes}</p>}
+                    {application.status === 'Pending Review' && onReviewApplication && (
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            tacticalAudio.playTargetLock();
+                            onReviewApplication(application.id, true);
+                          }}
+                          className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-tactical font-black uppercase cursor-pointer"
+                        >
+                          ACCEPT & RECRUIT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            tacticalAudio.playAlertWarning();
+                            onReviewApplication(application.id, false);
+                          }}
+                          className="px-3 py-1.5 rounded bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-tactical font-black uppercase cursor-pointer"
+                        >
+                          DENY
+                        </button>
+                      </div>
+                    )}
                     <p className="text-[10px] text-neutral-600 font-mono">Request ID: {application.id}</p>
                   </div>
                 ))}
@@ -859,7 +890,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-neutral-800/60">
                     {filteredMembers.map(member => {
-                      const promoCheck = validatePromotionEligibility(member);
+                      const promoCheck = validatePromotionEligibility(member, undefined, ranks);
                       const isCallerAdmin = canDirectlyAssignRank(currentUser);
                       return (
                         <tr key={member.id} className="hover:bg-neutral-950/40 transition-colors">
@@ -1508,8 +1539,8 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                       const isRejected = req.status === 'Rejected' || req.status === 'Denied';
                       const isProcessing = processingPromoId === req.id;
                       const member = members.find(m => m.cid === req.operatorCid || m.name === req.operatorName);
-                      const targetRankDef = USSF_RANKS.find(r => r.level === req.targetRankLevel || r.name === req.targetRank) || USSF_RANKS[0];
-                      const validation = member ? validatePromotionEligibility(member, req.targetRankLevel) : null;
+                      const targetRankDef = ranks.find(r => r.level === req.targetRankLevel || r.name === req.targetRank) || ranks[0];
+                      const validation = member ? validatePromotionEligibility(member, req.targetRankLevel, ranks) : null;
 
                       // Extract proof URL if provided in notes or separate field
                       const proofMatch = (req.notes || '').match(/(https?:\/\/[^\s]+)/g);
@@ -3173,7 +3204,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
 
       {/* 1. PROMOTION ELIGIBILITY & ASSESSMENT MODAL */}
       {eligibilityModalMember && (() => {
-        const assessment = validatePromotionEligibility(eligibilityModalMember);
+        const assessment = validatePromotionEligibility(eligibilityModalMember, undefined, ranks);
         const isCallerAdmin = canDirectlyAssignRank(currentUser);
         return (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -3575,7 +3606,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                 onChange={(e) => setDirectRankSelectedLevel(Number(e.target.value))}
                 className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-tactical text-amber-300 font-bold"
               >
-                {USSF_RANKS.map(r => (
+                {ranks.map(r => (
                   <option key={r.level} value={r.level}>
                     Tier {r.level} — {r.name} ({r.category})
                   </option>
@@ -3612,7 +3643,7 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
                     alert('Please enter an admin justification note for the audit log.');
                     return;
                   }
-                  const targetRank = USSF_RANKS.find(r => r.level === directRankSelectedLevel);
+                  const targetRank = ranks.find(r => r.level === directRankSelectedLevel);
                   if (!targetRank) return;
                   tacticalAudio.playTargetLock();
                   if (onUpdateMemberRank) {
@@ -4259,8 +4290,8 @@ export const USSFAdminView: React.FC<USSFAdminViewProps> = ({
       {/* MODAL 9: INSPECT PROMOTION DOSSIER MODAL */}
       {inspectingPromo && (() => {
         const candidateMember = members.find(m => m.cid === inspectingPromo.operatorCid || m.name === inspectingPromo.operatorName);
-        const targetRankDef = USSF_RANKS.find(r => r.level === inspectingPromo.targetRankLevel || r.name === inspectingPromo.targetRank) || USSF_RANKS[0];
-        const validation = candidateMember ? validatePromotionEligibility(candidateMember, inspectingPromo.targetRankLevel) : null;
+        const targetRankDef = ranks.find(r => r.level === inspectingPromo.targetRankLevel || r.name === inspectingPromo.targetRank) || ranks[0];
+        const validation = candidateMember ? validatePromotionEligibility(candidateMember, inspectingPromo.targetRankLevel, ranks) : null;
         const proofMatch = (inspectingPromo.notes || '').match(/(https?:\/\/[^\s]+)/g);
         const evidenceUrl = inspectingPromo.evidenceProofUrl || (proofMatch ? proofMatch[0] : null);
 

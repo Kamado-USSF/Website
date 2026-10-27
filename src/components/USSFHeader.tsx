@@ -36,6 +36,7 @@ interface USSFHeaderProps {
   activePersonnelCount?: number;
   onOpenPhpExport?: () => void;
   currentUser: USSFMember | null;
+  groupInfo?: typeof USSF_GROUP_INFO;
   onOpenAuth: () => void;
   onLogout: () => void;
   unreadNotificationCount: number;
@@ -54,6 +55,7 @@ export const USSFHeader: React.FC<USSFHeaderProps> = ({
   onNavigate,
   activePersonnelCount = 6,
   currentUser,
+  groupInfo,
   onOpenAuth,
   onLogout,
   unreadNotificationCount,
@@ -113,7 +115,7 @@ export const USSFHeader: React.FC<USSFHeaderProps> = ({
           </span>
           <span className="text-neutral-700 hidden sm:inline">|</span>
           <span className="hidden md:inline text-neutral-300 italic">
-            "{USSF_GROUP_INFO.motto}"
+            "{groupInfo?.motto || USSF_GROUP_INFO.motto}"
           </span>
         </div>
 

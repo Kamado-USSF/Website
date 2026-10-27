@@ -8,6 +8,7 @@ import {
   findAdminMember,
   getSessionFromRequest,
   requireAdminSession,
+  SELF_SERVICE_MEMBER_FIELDS,
   verifyAdminCredentials
 } from '../lib/auth.js';
 import {
@@ -283,19 +284,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const isCreate = path.length === 1 && req.method === 'POST';
   const isUpdate = path.length === 2 && req.method === 'PUT';
   const isDelete = path.length === 2 && req.method === 'DELETE';
+
+  // POST /api/members/:id/presence — presence heartbeat for a signed-in member or
+  // an administrator; only the two presence fields are ever written.
+  if (route === 'members' && id && path[2] === 'presence' && req.method === 'POST') {
+    const presence = String(objectBody(req.body)?.presenceStatus || '').trim();
+    if (!['Online', 'Idle', 'DND', 'Offline'].includes(presence)) {
+      return res.status(400).json({ success: false, error: 'Invalid presence status.' });
+    }
+    if (!getSessionFromRequest(req)) {
+      return res.status(401).json({ success: false, error: 'Sign-in required to update presence.' });
+    }
+    try {
+      const patch = { presenceStatus: presence, isOnlineCit: presence !== 'Offline' };
+      const sql = await getSql();
+      const rows = await sql`
+        UPDATE ussf_app_state
+        SET state = jsonb_set(state, ARRAY['members'],
+          (SELECT jsonb_agg(CASE WHEN entry.item->>'id' = ${id}
+            THEN entry.item || ${JSON.stringify(patch)}::jsonb ELSE entry.item END ORDER BY entry.ordinality)
+            FROM jsonb_array_elements(COALESCE(state->'members', '[]'::jsonb))
+            WITH ORDINALITY AS entry(item, ordinality)), true),
+          updated_at = now()
+        WHERE id = 1 AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(state->'members', '[]'::jsonb)) AS entry(item) WHERE entry.item->>'id' = ${id})
+        RETURNING state->'members' AS records
+      `;
+      if (!rows[0]) return res.status(404).json({ success: false, error: 'Resource not found.' });
+      const record = (rows[0].records as JsonObject[]).find(item => item.id === id);
+      return res.status(200).json({ success: true, member: record, presenceStatus: presence });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
   if (!isCreate && !isUpdate && !isDelete) {
     return res.status(405).json({ success: false, error: 'Method not allowed.' });
   }
 
-  // Every administrator operation requires the signed session cookie issued at login.
+  // Members may save their own cosmetic profile fields (avatar, namecard, frame,
+  // cursor, bio, presence) without an administrator session. Every other
+  // operation — creates, deletes, review actions, privileged member edits —
+  // still requires the signed session cookie issued at administrator login.
+  const isSelfServiceMemberUpdate = route === 'members' && isUpdate && !getSessionFromRequest(req);
   const isReview = isUpdate && REVIEW_ROUTES.has(route);
-  if (isReview || !(isCreate && config.publicCreate)) {
+  if (!isSelfServiceMemberUpdate && (isReview || !(isCreate && config.publicCreate))) {
     if (!requireAdminSession(req, res)) return;
   }
 
   const body = objectBody(req.body);
   if (!isDelete && !body) return res.status(400).json({ success: false, error: 'Request body must be a JSON object.' });
   if (isUpdate && !id) return res.status(400).json({ success: false, error: 'Resource ID is required.' });
+
+  // Authorization is decided before any database access: an anonymous member
+  // update that carries no self-service field is rejected outright.
+  if (isSelfServiceMemberUpdate && body) {
+    const allowed = SELF_SERVICE_MEMBER_FIELDS.filter(field => field in body);
+    if (allowed.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Administrator session required for this update.'
+      });
+    }
+  }
 
   if (isReview) {
     await handleReview(route, id, body!, operation, res);
@@ -326,6 +376,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isUpdate && updates && cleanId(updates?.id) && cleanId(updates.id) !== id) {
       return res.status(400).json({ success: false, error: 'Resource ID does not match the URL.' });
     }
+
+    // Anonymous member updates are restricted to the cosmetic allowlist; a body
+    // containing only privileged fields is rejected with the standard 401.
+    let appliedUpdates = updates;
+    if (isSelfServiceMemberUpdate && updates) {
+      const filtered: JsonObject = {};
+      for (const field of SELF_SERVICE_MEMBER_FIELDS) {
+        if (field in updates) filtered[field] = updates[field];
+      }
+      if (Object.keys(filtered).length === 0) {
+        return res.status(401).json({
+          success: false,
+          error: 'Administrator session required for this update.'
+        });
+      }
+      appliedUpdates = filtered;
+    }
     const rows = isDelete
       ? await sql`
           UPDATE ussf_app_state
@@ -342,7 +409,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           UPDATE ussf_app_state
           SET state = jsonb_set(state, ARRAY[${config.collection}],
             (SELECT jsonb_agg(CASE WHEN entry.item->>'id' = ${id}
-              THEN entry.item || ${JSON.stringify(updates)}::jsonb ELSE entry.item END ORDER BY entry.ordinality)
+              THEN entry.item || ${JSON.stringify(appliedUpdates)}::jsonb ELSE entry.item END ORDER BY entry.ordinality)
               FROM jsonb_array_elements(COALESCE(state->${config.collection}, '[]'::jsonb))
               WITH ORDINALITY AS entry(item, ordinality)), true),
             updated_at = now()

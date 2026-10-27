@@ -180,13 +180,41 @@ export function reviewApplication(
   }
 
   // Accepting enlists the applicant into the roster as a Recruit, once.
+  // If the applicant already exists on the roster (name/account/CID match), the
+  // existing record is upgraded instead of creating a duplicate entry.
   let membersChanged = false;
   if (status === 'Accepted' || status === 'Approved') {
+    const websiteAccount = String(application.accountName || application.applicantName || '').trim();
+    const normalizedName = application.applicantName.trim().toLowerCase();
+    const normalizedAccount = websiteAccount.toLowerCase();
+    const normalizedCid = requestedCid.toLowerCase();
+    const existing = members.find(candidate =>
+      (normalizedCid && (candidate.cid || '').trim().toLowerCase() === normalizedCid)
+    ) || members.find(candidate =>
+      (candidate.accountName || '').trim().toLowerCase() === normalizedAccount ||
+      (candidate.name || '').trim().toLowerCase() === normalizedName
+    );
+    if (existing) {
+      if (websiteAccount && existing.accountName !== websiteAccount) {
+        existing.accountName = websiteAccount;
+        membersChanged = true;
+      }
+      if (!existing.isMember || existing.isApplicant || existing.status === 'Applicant') {
+        existing.isMember = true;
+        existing.isApplicant = false;
+        existing.status = 'Active Duty';
+        membersChanged = true;
+      }
+      if (requestedCid && existing.cid !== requestedCid) {
+        existing.cid = requestedCid;
+        membersChanged = true;
+      }
+    } else {
     const newMember: USSFMember = {
       id: `member-${Date.now()}`,
       cid: requestedCid || `SF-${Math.floor(100 + Math.random() * 899)}`,
       name: application.applicantName,
-      accountName: application.applicantName,
+      accountName: websiteAccount || application.applicantName,
       callsign: `Operator-${application.applicantName.substring(0, 4)}`,
       rank: 'Recruit',
       rankLevel: 1,
@@ -211,6 +239,7 @@ export function reviewApplication(
     };
     members.unshift(newMember);
     membersChanged = true;
+    }
   }
 
   return { ok: true, record: application, membersChanged };
@@ -235,13 +264,72 @@ export function reviewLinkRequest(
   if (reviewedBy) request.reviewedBy = reviewedBy;
   if (rejectionReason) request.adminNote = rejectionReason;
 
-  // Approving maps the verified in-game CID to the website account on the roster.
+  // Approving maps the verified in-game identity to the website account on the
+  // roster. When no roster record exists yet (a member who joined in-game before
+  // the roster existed, or whose CID changed), the verified identity is enrolled
+  // as a full active member so they receive every website feature. Matching also
+  // falls back to account name / in-game name so a re-linked member is upgraded
+  // instead of duplicated.
   let membersChanged = false;
   if (status === 'Approved') {
     const normalizedCid = request.inGameCid.trim().toLowerCase();
-    const member = members.find(candidate => (candidate.cid || '').trim().toLowerCase() === normalizedCid);
-    if (member && member.accountName !== request.username) {
-      member.accountName = request.username;
+    const normalizedUsername = request.username.trim().toLowerCase();
+    const normalizedName = request.inGameName.trim().toLowerCase();
+    const member =
+      members.find(candidate => (candidate.cid || '').trim().toLowerCase() === normalizedCid) ||
+      members.find(candidate => (candidate.accountName || '').trim().toLowerCase() === normalizedUsername) ||
+      members.find(candidate => (candidate.name || '').trim().toLowerCase() === normalizedName);
+
+    if (member) {
+      if (member.accountName !== request.username) {
+        member.accountName = request.username;
+        membersChanged = true;
+      }
+      if (!member.isMember || member.isApplicant || member.status === 'Applicant') {
+        member.isMember = true;
+        member.isApplicant = false;
+        member.status = 'Active Duty';
+        membersChanged = true;
+      }
+      if (!member.linkedInGame) {
+        member.linkedInGame = true;
+        membersChanged = true;
+      }
+      if ((!member.cid || member.cid === 'CIV-UNASSIGNED') && request.inGameCid) {
+        member.cid = request.inGameCid;
+        membersChanged = true;
+      }
+    } else {
+      const rankDefinition =
+        USSF_RANKS.find(rank => rank.name.trim().toLowerCase() === request.ingameRank.trim().toLowerCase()) ||
+        USSF_RANKS.find(rank => rank.name.trim().toLowerCase().startsWith(request.ingameRank.trim().toLowerCase()));
+      const newMember: USSFMember = {
+        id: `member-${Date.now()}`,
+        cid: request.inGameCid,
+        name: request.inGameName,
+        accountName: request.username,
+        callsign: request.inGameName,
+        rank: rankDefinition?.name || 'Recruit',
+        rankLevel: rankDefinition?.level || 1,
+        rankCategory: (rankDefinition?.category as USSFMember['rankCategory']) || 'Regular Member',
+        division: 'Unassigned',
+        joinedDate: new Date().toISOString().split('T')[0],
+        status: 'Active Duty',
+        presenceStatus: 'Online',
+        promotionPoints: 0,
+        totalPayout: 0,
+        arrestCount: 0,
+        patrolHours: 0,
+        playtimeHours: 0,
+        serviceRibbons: ['Enlistment Ribbon'],
+        avatarUrl: '/src/assets/images/military_leader_training_1790341999734.jpg',
+        avatarFrame: rankDefinition?.unlockedFrame || 'Standard Issue Border',
+        namecard: rankDefinition?.unlockedNamecard || 'CIT2 Law Enforcer',
+        isMember: true,
+        isApplicant: false,
+        linkedInGame: true
+      };
+      members.unshift(newMember);
       membersChanged = true;
     }
   }

@@ -54,6 +54,7 @@ import {
   findAdminMember,
   getSessionFromRequest,
   requireAdminSession,
+  SELF_SERVICE_MEMBER_FIELDS,
   verifyAdminCredentials
 } from './lib/auth';
 import {
@@ -270,10 +271,24 @@ async function startServer() {
   });
 
   app.put('/api/members/:id', (req, res) => {
-    if (!requireAdminSession(req, res)) return;
+    const { id } = req.params;
+    let updates: Partial<USSFMember> = req.body || {};
+    if (!getSessionFromRequest(req)) {
+      // Signed-in members may save their own cosmetic profile fields without an
+      // administrator session; privileged edits still require one.
+      const filtered: Record<string, unknown> = {};
+      for (const field of SELF_SERVICE_MEMBER_FIELDS) {
+        if (field in updates) filtered[field] = (updates as Record<string, unknown>)[field];
+      }
+      if (Object.keys(filtered).length === 0) {
+        return res.status(401).json({
+          success: false,
+          error: 'Administrator session required. Please sign in with your administrator account.'
+        });
+      }
+      updates = filtered as Partial<USSFMember>;
+    }
     try {
-      const { id } = req.params;
-      const updates: Partial<USSFMember> = req.body;
       db = loadDatabase();
       const idx = db.members.findIndex(m => m.id === id);
       if (idx === -1) {

@@ -24,6 +24,26 @@ const ADMIN_ACCOUNT_ALIASES = ['kamado', 'sf-001'];
 // USSF_ADMIN_PASSWORD environment variable (recommended for deployments).
 const DEFAULT_ADMIN_PASSWORD = 'FeelPainAcceptPainAndKnowPain';
 
+/**
+ * Profile fields a signed-in member may save on their own roster record without
+ * an administrator session (avatar, namecard, frame, cursor, bio, presence).
+ * Identity and privilege fields (name, rank, division, roles, stats, CID, …)
+ * remain administrator-only, so a visitor can never rewrite roster identity or
+ * promote themselves by editing their own request body.
+ */
+export const SELF_SERVICE_MEMBER_FIELDS = [
+  'avatarUrl',
+  'avatarFrame',
+  'namecard',
+  'namecardBgUrl',
+  'nameStyle',
+  'customCursor',
+  'bio',
+  'signature',
+  'presenceStatus',
+  'isOnlineCit'
+] as const;
+
 export interface AdminSession {
   sub: string;
   name: string;

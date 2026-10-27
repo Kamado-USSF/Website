@@ -17,8 +17,12 @@ import {
   USSFAchievement, 
   USSFAssetItem,
   DiscordPresenceStatus,
-  USSF_GROUP_INFO
+  USSF_GROUP_INFO,
+  RankDefinition
 } from '../data/ussfData';
+
+/** Group specification as edited in the studio: defaults plus optional custom ranks. */
+export type GroupInfoShape = typeof USSF_GROUP_INFO & { customRanks?: RankDefinition[] };
 
 export interface AuthoritativeSystemState {
   version: number;
@@ -36,7 +40,7 @@ export interface AuthoritativeSystemState {
   loginRewards: DailyLoginReward[];
   pendingLoginClaims: PendingLoginRewardClaim[];
   promotionRequests: PromotionRequest[];
-  groupInfo: typeof USSF_GROUP_INFO;
+  groupInfo: GroupInfoShape;
   birthdayGifts: BirthdayGift[];
   squadGroups: SquadGroupChat[];
   achievements: USSFAchievement[];
@@ -308,13 +312,13 @@ export const api = {
   },
 
   // 7. Group Info
-  async updateGroupInfo(info: Partial<typeof USSF_GROUP_INFO>): Promise<typeof USSF_GROUP_INFO> {
+  async updateGroupInfo(info: Partial<GroupInfoShape>): Promise<GroupInfoShape> {
     const res = await fetch('/api/group-info', {
       method: 'POST',
       headers: jsonHeaders,
       body: JSON.stringify(info)
     });
-    const json = await parseApiResponse<{ success: boolean; groupInfo?: typeof USSF_GROUP_INFO; error?: string }>(res, 'Update group specifications');
+    const json = await parseApiResponse<{ success: boolean; groupInfo?: GroupInfoShape; error?: string }>(res, 'Update group specifications');
     if (!json.groupInfo) throw new Error('Update group specifications failed: response did not include the saved values.');
     return json.groupInfo;
   },
