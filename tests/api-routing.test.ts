@@ -309,3 +309,27 @@ test('vercel.json rewrite segments (rp parameter) dispatch review routes to the 
   assert.equal(authLogin.state.status, 401);
   assert.match((authLogin.state.body as { error: string }).error, /invalid administrator credentials/i);
 });
+
+test('auto-forwarded rewrite id parameters normalize to the same review path', async () => {
+  // Shape A: rp carries only the route name, the id arrives as ?id=.
+  const autoForwarded = createResponse();
+  await fallbackHandler({
+    method: 'PUT',
+    query: { rp: 'promotions', id: 'promo-7' },
+    headers: {},
+    body: { status: 'Denied' }
+  } as unknown as VercelRequest, autoForwarded.response);
+  assert.equal(autoForwarded.state.status, 401);
+  assert.match((autoForwarded.state.body as { error: string }).error, /session required/i);
+
+  // Shape B: substitution left a literal ':id' in rp while ?id= carries the value.
+  const literalPlaceholder = createResponse();
+  await fallbackHandler({
+    method: 'PUT',
+    query: { rp: 'link-requests/:id', id: 'link-9' },
+    headers: {},
+    body: { status: 'Rejected' }
+  } as unknown as VercelRequest, literalPlaceholder.response);
+  assert.equal(literalPlaceholder.state.status, 401);
+  assert.match((literalPlaceholder.state.body as { error: string }).error, /session required/i);
+});

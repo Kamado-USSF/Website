@@ -66,7 +66,18 @@ function resolveRoutePath(req: VercelRequest): string[] {
   const fromRewrite = req.query.rp;
   if (fromRewrite !== undefined) {
     const raw = Array.isArray(fromRewrite) ? fromRewrite.join('/') : String(fromRewrite);
-    return raw.split('/').filter(Boolean);
+    const segments = raw.split('/').filter(Boolean);
+    // Depending on Vercel's rewrite engine, `:id` is either substituted inside
+    // `rp` itself or auto-forwarded as a separate `?id=` query parameter.
+    // Normalize both shapes (and the unresolved-literal `:id`) to the same path.
+    const forwardedId = req.query.id;
+    if (typeof forwardedId === 'string' && forwardedId) {
+      const last = segments[segments.length - 1];
+      if (last === undefined) segments.push(forwardedId);
+      else if (last.startsWith(':')) segments[segments.length - 1] = forwardedId;
+      else if (segments.length === 1) segments.push(forwardedId);
+    }
+    return segments;
   }
 
   const fromRouter = req.query.path;
