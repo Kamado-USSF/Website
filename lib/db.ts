@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import seedSnapshot from '../data/ussf-database.json';
+import { USSF_SEED } from './seed.js';
 
 export interface PersistentState {
   version: number;
@@ -68,7 +68,7 @@ let schemaReadyPromise: Promise<void> | null = null;
 async function ensureStateTable(sql: SqlClient): Promise<void> {
   if (!schemaReadyPromise) {
     const attempt = (async () => {
-      if (!seedSnapshot || !Array.isArray(seedSnapshot.members) || !Array.isArray(seedSnapshot.customAssets)) {
+      if (!Array.isArray(USSF_SEED.members) || !Array.isArray(USSF_SEED.customAssets)) {
         throw new Error('The bundled database snapshot does not match the expected USSF state shape.');
       }
       try {
@@ -85,7 +85,7 @@ async function ensureStateTable(sql: SqlClient): Promise<void> {
       }
       await sql`
         INSERT INTO ussf_app_state (id, state)
-        VALUES (1, ${JSON.stringify(seedSnapshot)}::jsonb)
+        VALUES (1, ${JSON.stringify(USSF_SEED)}::jsonb)
         ON CONFLICT (id) DO NOTHING
       `;
     })();
