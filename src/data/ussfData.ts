@@ -511,6 +511,9 @@ export interface PendingLoginRewardClaim {
   promotionPoints: number;
   claimedAt: string;
   status: 'Pending Payout' | 'Paid Out';
+  reviewedBy?: string;
+  reviewedAt?: string;
+  rejectionReason?: string;
 }
 
 // Birthday Gift Gifting

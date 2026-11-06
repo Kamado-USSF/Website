@@ -61,6 +61,7 @@ import {
   reviewApplication,
   reviewClaim,
   reviewLinkRequest,
+  reviewLoginClaim,
   reviewPromotion,
   reviewReport
 } from './lib/review';
@@ -372,6 +373,48 @@ async function startServer() {
       res.json({ success: true, claim: outcome.record });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Server error reviewing claim.' });
+    }
+  });
+
+  // 3b. Daily Login Reward Claims (submitted by members, paid by administrators)
+  app.post('/api/login-claims', (req, res) => {
+    try {
+      const claim: PendingLoginRewardClaim = req.body;
+      if (!claim || !claim.operatorName || !claim.operatorCid || !Number.isFinite(Number(claim.cashAmount))) {
+        return res.status(400).json({ success: false, error: 'A login reward claim requires an operator name, CID and cash amount.' });
+      }
+      db = loadDatabase();
+      const saved: PendingLoginRewardClaim = {
+        ...claim,
+        id: claim.id || `plc-${randomUUID()}`,
+        cashAmount: Number(claim.cashAmount) || 0,
+        promotionPoints: Number(claim.promotionPoints) || 0,
+        // Members can never self-approve a payout.
+        status: 'Pending Payout'
+      };
+      db.pendingLoginClaims.unshift(saved);
+      saveDatabase(db);
+      res.json({ success: true, claim: saved });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/login-claims/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
+    try {
+      const { id } = req.params;
+      db = loadDatabase();
+      const outcome = reviewLoginClaim(db.pendingLoginClaims, db.members, id, req.body || {});
+      if (!outcome.ok) {
+        return res.status(outcome.status).json({ success: false, error: outcome.error });
+      }
+      if (!saveDatabase(db)) {
+        return res.status(500).json({ success: false, error: 'Could not persist reviewed login reward claim.' });
+      }
+      res.json({ success: true, claim: outcome.record });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'Server error reviewing login reward claim.' });
     }
   });
 

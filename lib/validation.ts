@@ -132,10 +132,16 @@ export function findLinkRequestConflict(
 
   const rosterCid = (state.members || []).find(member => member.cid?.trim().toLowerCase() === normalizedCid);
   if (rosterCid) {
+    if (rosterCid.accountName) {
+      const linkedToThisAccount = rosterCid.accountName.trim().toLowerCase() === normalizedUsername;
+      return {
+        error: linkedToThisAccount
+          ? 'This CID is already linked to your website account. Sign in to open your member profile.'
+          : 'This CID is already linked to a website account. Sign in with that account, or ask an administrator to relink it.'
+      };
+    }
     return {
-      error: rosterCid.accountName
-        ? 'This CID is already associated with a website account.'
-        : 'This CID is already on the roster without a verified website-account mapping and requires administrative recovery.'
+      error: 'This CID is already on the roster without a verified website-account mapping and requires administrative recovery.'
     };
   }
 

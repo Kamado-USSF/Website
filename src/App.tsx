@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion, Variants } from 'framer-motion';
 import { USSFHeader, USSFView } from './components/USSFHeader';
 import { HeroSection } from './components/HeroSection';
@@ -257,9 +257,21 @@ export default function App() {
     currentUser.isOwner || currentUser.isAdmin || (currentUser.specialRoles?.length || 0) > 0 ||
     currentUser.rankCategory === 'High Command' || (currentUser.rankLevel || 0) >= 16
   ));
+  // A rejected privileged request means the signed HTTP-only admin session is gone
+  // (expired, or the site is on a new hostname). Say so plainly and offer sign-in
+  // instead of surfacing a raw "administrator session required" error.
+  const adminClaimsRef = useRef(false);
+  adminClaimsRef.current = clientClaimsAdmin;
+
   // Restore the server admin session on load and react to expired/rejected sessions.
   useEffect(() => {
-    setUnauthorizedHandler(() => setAdminSessionActive(false));
+    setUnauthorizedHandler(() => {
+      setAdminSessionActive(false);
+      if (adminClaimsRef.current) {
+        showToast('Administrator session expired. Sign in again to keep editing.');
+        setIsAuthModalOpen(true);
+      }
+    });
     let isMounted = true;
     api.getSession().then(session => {
       if (isMounted && session.authenticated) setAdminSessionActive(true);
@@ -803,8 +815,9 @@ export default function App() {
     }
   };
 
-  // Daily Bonus claiming sends claim to Admin Section for monetary payout approval
-  const handleClaimDailyBonus = () => {
+  // Daily Bonus claiming is persisted server-side so the payout lands in the real
+  // administrator disbursement queue instead of only in this browser tab.
+  const handleClaimDailyBonus = async () => {
     if (!currentUser || !currentUser.isMember || currentUser.isApplicant) {
       showToast('ACCESS DENIED: Daily login bonuses are available only to verified active USSF members.');
       return;
@@ -822,34 +835,47 @@ export default function App() {
       status: 'Pending Payout'
     };
 
-    setPendingLoginClaims([newClaim, ...pendingLoginClaims]);
+    try {
+      const saved = await api.submitLoginClaim(newClaim);
+      setPendingLoginClaims(prev => [saved, ...prev.filter(c => c.id !== saved.id)]);
 
-    // Mark notification as read
-    setNotifications(notifications.map(n => n.type === 'bonus' ? { ...n, isRead: true } : n));
-    showToast('Day 01 Login Reward ($500,000 Cash + 25 Points) sent to Admin Section for disbursement approval!');
+      // Mark notification as read
+      setNotifications(notifications.map(n => n.type === 'bonus' ? { ...n, isRead: true } : n));
+      showToast('Day 01 Login Reward ($500,000 Cash + 25 Points) sent to Admin Section for disbursement approval!');
+    } catch (err: any) {
+      showToast(`Error submitting login reward claim: ${err?.message || 'Failed to save'}`);
+    }
   };
 
-  const handleApproveLoginClaim = (id: string) => {
+  const handleApproveLoginClaim = async (id: string) => {
     const claim = pendingLoginClaims.find(c => c.id === id);
     if (!claim) return;
 
-    setPendingLoginClaims(pendingLoginClaims.map(c => c.id === id ? { ...c, status: 'Paid Out' } : c));
+    try {
+      const reviewer = currentUser?.callsign || currentUser?.name || 'Administrator';
+      const updated = await api.reviewLoginClaim(id, 'Paid Out', reviewer);
+      setPendingLoginClaims(prev => prev.map(c => c.id === id ? updated : c));
 
-    // Credit member payout
-    setMembers(members.map(m => m.cid === claim.operatorCid ? { 
-      ...m, 
-      totalPayout: m.totalPayout + claim.cashAmount,
-      promotionPoints: m.promotionPoints + claim.promotionPoints
-    } : m));
-    if (currentUser && currentUser.cid === claim.operatorCid) {
-      setCurrentUser({ 
-        ...currentUser, 
-        totalPayout: currentUser.totalPayout + claim.cashAmount,
-        promotionPoints: currentUser.promotionPoints + claim.promotionPoints
-      });
+      // Reload authoritative state so the credited cash and points are visible and never
+      // overwritten by the next poll with a stale local balance.
+      try {
+        const state = await api.getAdminState();
+        if (state.members) setMembers(state.members);
+        if (state.pendingLoginClaims) setPendingLoginClaims(state.pendingLoginClaims);
+        setCurrentUser(prevUser => {
+          if (!prevUser) return prevUser;
+          const fresh = (state.members || []).find(m => m.id === prevUser.id || m.cid === prevUser.cid);
+          if (!fresh) return prevUser;
+          return { ...fresh, presenceStatus: prevUser.presenceStatus };
+        });
+      } catch {
+        // The payout is already committed server-side; a refresh failure is not fatal.
+      }
+
+      showToast(`Disbursed $${updated.cashAmount.toLocaleString()} Cash to ${updated.operatorName}!`);
+    } catch (err: any) {
+      showToast(`Error approving login reward: ${err?.message || 'Failed to update'}`);
     }
-
-    showToast(`Disbursed $${claim.cashAmount.toLocaleString()} Cash to ${claim.operatorName}!`);
   };
 
   const handleSendBirthdayGift = async (gift: BirthdayGift) => {
@@ -1239,9 +1265,14 @@ export default function App() {
                     setPreselectedQuantity(qty || 1);
                     setIsClaimModalOpen(true);
                   }}
-                  onClaimDailyLoginReward={(claim) => {
-                    setPendingLoginClaims([claim, ...pendingLoginClaims]);
-                    showToast('Daily login reward claim submitted to Admin Queue!');
+                  onClaimDailyLoginReward={async (claim) => {
+                    try {
+                      const saved = await api.submitLoginClaim(claim);
+                      setPendingLoginClaims(prev => [saved, ...prev.filter(c => c.id !== saved.id)]);
+                      showToast('Daily login reward claim submitted to Admin Queue!');
+                    } catch (err: any) {
+                      showToast(`Error submitting login reward claim: ${err?.message || 'Failed to save'}`);
+                    }
                   }}
                 />
               </motion.div>
@@ -1328,9 +1359,14 @@ export default function App() {
                     currentUser={currentUser}
                     applications={applications}
                     events={adminEvents}
-                    onAddEvent={(e) => {
-                      setAdminEvents([e, ...adminEvents]);
-                      showToast(`Activated Multiplier Campaign: ${e.title}`);
+                    onAddEvent={async (e) => {
+                      try {
+                        const saved = await api.saveAdminEvent(e);
+                        setAdminEvents(prev => [saved, ...prev.filter(evt => evt.id !== saved.id)]);
+                        showToast(`Activated Multiplier Campaign: ${saved.title} (${saved.multiplier}X)`);
+                      } catch (err: any) {
+                        showToast(`Error saving multiplier event: ${err?.message || 'Failed to save'}`);
+                      }
                     }}
                     forgotPwRequests={forgotPwRequests}
                     onResolveForgotPw={handleResolveForgotPw}

@@ -15,6 +15,7 @@ import {
   reviewApplication,
   reviewClaim,
   reviewLinkRequest,
+  reviewLoginClaim,
   reviewPromotion,
   reviewReport
 } from '../lib/review.js';
@@ -23,6 +24,7 @@ import {
   type AccountLinkRequest,
   type FieldReport,
   type FinancialClaim,
+  type PendingLoginRewardClaim,
   type PromotionRequest,
   type RecruitmentApplication,
   type USSFMember
@@ -39,12 +41,13 @@ const ROUTES: Record<string, { collection: string; itemKey: string; publicCreate
   'admin-events': { collection: 'adminEvents', itemKey: 'event', publicCreate: false },
   'social-posts': { collection: 'socialPosts', itemKey: 'post', publicCreate: true },
   'link-requests': { collection: 'linkRequests', itemKey: 'linkRequest', publicCreate: false },
+  'login-claims': { collection: 'pendingLoginClaims', itemKey: 'claim', publicCreate: true },
 };
 
 // Review (approve/reject) routes are handled by the shared review logic so the
 // roster side effects (payouts, rank changes, recruit creation, account linking)
 // behave exactly like the local Express server.
-const REVIEW_ROUTES = new Set(['claims', 'reports', 'promotions', 'applications', 'link-requests']);
+const REVIEW_ROUTES = new Set(['claims', 'reports', 'promotions', 'applications', 'link-requests', 'login-claims']);
 
 function objectBody(value: unknown): JsonObject | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
@@ -247,6 +250,16 @@ async function handleReview(route: string, id: string, body: JsonObject, operati
       return void res.status(200).json({ success: true, application: outcome.record });
     }
 
+    if (route === 'login-claims') {
+      const loginClaims = (state.pendingLoginClaims || []) as PendingLoginRewardClaim[];
+      const outcome = reviewLoginClaim(loginClaims, members, id, body);
+      if (!outcome.ok) return void res.status(outcome.status).json({ success: false, error: outcome.error });
+      const updates: Array<{ collection: string; records: unknown[] }> = [{ collection: 'pendingLoginClaims', records: loginClaims }];
+      if (outcome.membersChanged) updates.push({ collection: 'members', records: members });
+      await writeCollections(updates);
+      return void res.status(200).json({ success: true, claim: outcome.record });
+    }
+
     const linkRequests = (state.linkRequests || []) as AccountLinkRequest[];
     const outcome = reviewLinkRequest(linkRequests, members, id, body);
     if (!outcome.ok) return void res.status(outcome.status).json({ success: false, error: outcome.error });
@@ -360,6 +373,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (route === 'reports') record.status = 'Pending Verification';
       if (route === 'promotions') record.status = 'Pending';
       if (route === 'applications') record.status = 'Pending Review';
+      if (route === 'login-claims') record.status = 'Pending Payout';
       const rows = await sql`
         UPDATE ussf_app_state
         SET state = jsonb_set(state, ARRAY[${config.collection}],

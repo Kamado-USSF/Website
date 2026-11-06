@@ -4,6 +4,7 @@ import {
   reviewApplication,
   reviewClaim,
   reviewLinkRequest,
+  reviewLoginClaim,
   reviewPromotion,
   reviewReport
 } from '../lib/review';
@@ -11,6 +12,7 @@ import type {
   AccountLinkRequest,
   FieldReport,
   FinancialClaim,
+  PendingLoginRewardClaim,
   PromotionRequest,
   RecruitmentApplication,
   USSFMember
@@ -111,6 +113,35 @@ test('claim review fails closed for unknown ids and missing status', () => {
   const noStatus = reviewClaim([makeClaim()], members, 'claim-1', {});
   assert.equal(noStatus.ok, false);
   assert.equal(noStatus.ok === false && noStatus.status, 400);
+});
+
+test('login reward payment credits cash and points once; re-review does not double-credit', () => {
+  const claims: PendingLoginRewardClaim[] = [{
+    id: 'plc-1',
+    operatorName: 'GhostOperator',
+    operatorCid: 'SF-301',
+    day: 1,
+    cashAmount: 500000,
+    promotionPoints: 25,
+    claimedAt: '2026-03-01 10:00:00',
+    status: 'Pending Payout'
+  }];
+  const members = [makeMember()];
+
+  const paid = reviewLoginClaim(claims, members, 'plc-1', { status: 'Paid Out', reviewedBy: 'Kamado' });
+  assert.equal(paid.ok, true);
+  assert.equal(claims[0].status, 'Paid Out');
+  assert.equal(members[0].totalPayout, 1000000);
+  assert.equal(members[0].promotionPoints, 325);
+
+  reviewLoginClaim(claims, members, 'plc-1', { status: 'Paid Out' });
+  assert.equal(members[0].totalPayout, 1000000);
+  assert.equal(members[0].promotionPoints, 325);
+
+  const invalid = reviewLoginClaim(claims, members, 'plc-1', { status: 'Approved' });
+  assert.equal(invalid.ok, false);
+  const missing = reviewLoginClaim(claims, members, 'plc-x', { status: 'Paid Out' });
+  assert.equal(missing.ok, false);
 });
 
 test('field report approval credits host and participants; rejection credits nobody', () => {

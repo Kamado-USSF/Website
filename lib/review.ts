@@ -3,6 +3,7 @@ import type {
   AccountLinkRequest,
   FieldReport,
   FinancialClaim,
+  PendingLoginRewardClaim,
   PromotionRequest,
   RecruitmentApplication,
   USSFMember
@@ -55,6 +56,43 @@ export function reviewClaim(
     if (claimant) {
       claimant.totalPayout = (claimant.totalPayout || 0) + claim.amount;
       claimant.promotionPoints = (claimant.promotionPoints || 0) + 25;
+      membersChanged = true;
+    }
+  }
+
+  return { ok: true, record: claim, membersChanged };
+}
+
+export function reviewLoginClaim(
+  claims: PendingLoginRewardClaim[],
+  members: USSFMember[],
+  id: string,
+  patch: Record<string, unknown>
+): ReviewOutcome<PendingLoginRewardClaim> {
+  const status = requireStatus(patch.status);
+  if (!status) return { ok: false, status: 400, error: 'Login reward review status is required.' };
+  if (status !== 'Paid Out' && status !== 'Pending Payout') {
+    return { ok: false, status: 400, error: 'Login reward status must be Pending Payout or Paid Out.' };
+  }
+  const index = claims.findIndex(claim => claim.id === id);
+  if (index < 0) return { ok: false, status: 404, error: 'Login reward claim not found.' };
+
+  const claim = claims[index];
+  const previousStatus = claim.status;
+  claim.status = status as PendingLoginRewardClaim['status'];
+  if (patch.reviewedBy) claim.reviewedBy = String(patch.reviewedBy);
+  if (patch.rejectionReason !== undefined) claim.rejectionReason = String(patch.rejectionReason ?? '');
+  claim.reviewedAt = new Date().toISOString();
+
+  // Paying a login reward credits its cash and promotion points exactly once.
+  let membersChanged = false;
+  if (claim.status === 'Paid Out' && previousStatus !== 'Paid Out') {
+    const claimant = members.find(member =>
+      member.cid === claim.operatorCid || member.name === claim.operatorName
+    );
+    if (claimant) {
+      claimant.totalPayout = (claimant.totalPayout || 0) + (Number(claim.cashAmount) || 0);
+      claimant.promotionPoints = (claimant.promotionPoints || 0) + (Number(claim.promotionPoints) || 0);
       membersChanged = true;
     }
   }
