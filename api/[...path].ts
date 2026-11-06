@@ -288,15 +288,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  // Public submissions with dedicated handlers stay there; duplicate creates are refused explicitly.
-  const delegatedCreate = req.method === 'POST' && (route === 'claims' || route === 'link-requests');
-  if (!config || delegatedCreate) {
-    if (delegatedCreate) {
-      return res.status(501).json({ success: false, error: `${req.method} /api/${path.join('/')} is not implemented on this endpoint.` });
-    }
-    return res.status(404).json({ success: false, error: `API route not found: /api/${path.join('/')}` });
-  }
-
   const isCreate = path.length === 1 && req.method === 'POST';
   const isUpdate = path.length === 2 && req.method === 'PUT';
   const isDelete = path.length === 2 && req.method === 'DELETE';
@@ -408,6 +399,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch (error) {
       return sendApiError(res, error, operation);
     }
+  }
+
+  // Public submissions with dedicated handlers stay there; duplicate creates are refused explicitly.
+  const delegatedCreate = req.method === 'POST' && (route === 'claims' || route === 'link-requests');
+  if (!config || delegatedCreate) {
+    if (delegatedCreate) {
+      return res.status(501).json({ success: false, error: `${req.method} /api/${path.join('/')} is not implemented on this endpoint.` });
+    }
+    return res.status(404).json({ success: false, error: `API route not found: /api/${path.join('/')}` });
   }
 
   if (!isCreate && !isUpdate && !isDelete) {
