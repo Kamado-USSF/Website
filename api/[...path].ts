@@ -426,6 +426,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  // POST /api/login-claims — one claim per operator per calendar day, with bounded
+  // values, so the reward queue cannot be farmed with repeated submissions.
+  if (route === 'login-claims' && path.length === 1 && req.method === 'POST') {
+    const body = objectBody(req.body);
+    if (!body) return res.status(400).json({ success: false, error: 'Request body must be a JSON object.' });
+    const operatorCid = String(body.operatorCid || '').trim();
+    const operatorName = String(body.operatorName || '').trim();
+    const day = Number(body.day);
+    const cashAmount = Number(body.cashAmount);
+    const promotionPoints = Number(body.promotionPoints);
+    if (!operatorCid || !operatorName || !Number.isInteger(day) || day < 1 || day > 30 ||
+        !Number.isFinite(cashAmount) || cashAmount < 0 || cashAmount > 100000000 ||
+        !Number.isFinite(promotionPoints) || promotionPoints < 0 || promotionPoints > 1000) {
+      return res.status(400).json({ success: false, error: 'Invalid login reward claim values.' });
+    }
+    try {
+      const state = await readState();
+      const claims = (state.pendingLoginClaims || []) as unknown as JsonObject[];
+      const today = new Date().toISOString().slice(0, 10);
+      const alreadyClaimed = claims.some(claim =>
+        String(claim.operatorCid || '') === operatorCid && String(claim.claimedAt || '').slice(0, 10) === today
+      );
+      if (alreadyClaimed) {
+        return res.status(409).json({ success: false, error: 'A login reward was already claimed today for this CID.' });
+      }
+      const saved: JsonObject = {
+        ...body,
+        id: cleanId(body.id) || `plc-${randomUUID()}`,
+        operatorCid,
+        operatorName,
+        day,
+        cashAmount,
+        promotionPoints,
+        // The claim date is issued by the server so a client cannot forge a new day.
+        claimedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        status: 'Pending Payout'
+      };
+      claims.unshift(saved);
+      await writeCollections([{ collection: 'pendingLoginClaims', records: claims }]);
+      return res.status(201).json({ success: true, claim: saved });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
   // GET/POST /api/milestone-choices — the 7/30-day milestone reward table.
   if (route === 'milestone-choices' && path.length === 1) {
     if (req.method === 'GET') {

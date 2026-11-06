@@ -386,12 +386,30 @@ async function startServer() {
       if (!claim || !claim.operatorName || !claim.operatorCid || !Number.isFinite(Number(claim.cashAmount))) {
         return res.status(400).json({ success: false, error: 'A login reward claim requires an operator name, CID and cash amount.' });
       }
+      const cashAmount = Number(claim.cashAmount);
+      const promotionPoints = Number(claim.promotionPoints);
+      const day = Number(claim.day);
+      if (!Number.isInteger(day) || day < 1 || day > 30 ||
+          !Number.isFinite(cashAmount) || cashAmount < 0 || cashAmount > 100000000 ||
+          !Number.isFinite(promotionPoints) || promotionPoints < 0 || promotionPoints > 1000) {
+        return res.status(400).json({ success: false, error: 'Invalid login reward claim values.' });
+      }
       db = loadDatabase();
+      db.pendingLoginClaims ||= [];
+      const today = new Date().toISOString().slice(0, 10);
+      if (db.pendingLoginClaims.some(existing =>
+        existing.operatorCid === claim.operatorCid && String(existing.claimedAt || '').slice(0, 10) === today
+      )) {
+        return res.status(409).json({ success: false, error: 'A login reward was already claimed today for this CID.' });
+      }
       const saved: PendingLoginRewardClaim = {
         ...claim,
         id: claim.id || `plc-${randomUUID()}`,
-        cashAmount: Number(claim.cashAmount) || 0,
-        promotionPoints: Number(claim.promotionPoints) || 0,
+        day,
+        cashAmount,
+        promotionPoints,
+        // The claim date is issued by the server so a client cannot forge a new day.
+        claimedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
         // Members can never self-approve a payout.
         status: 'Pending Payout'
       };
