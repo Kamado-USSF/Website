@@ -335,6 +335,16 @@ export const api = {
     return json.event;
   },
 
+  async updateAchievements(achievements: USSFAchievement[]): Promise<USSFAchievement[]> {
+    const res = await fetch('/api/achievements/update', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ achievements })
+    });
+    const json = await parseApiResponse<{ success: boolean; achievements?: USSFAchievement[]; error?: string }>(res, 'Update achievements');
+    return json.achievements || achievements;
+  },
+
   // 9. Birthday Gifts
   async sendBirthdayGift(gift: BirthdayGift): Promise<BirthdayGift> {
     const res = await fetch('/api/birthdays/gift', {

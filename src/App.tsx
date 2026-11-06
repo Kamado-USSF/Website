@@ -658,12 +658,15 @@ export default function App() {
     }
   };
 
-  const handleUpdateAchievements = (newAch: USSFAchievement[]) => {
+  const handleUpdateAchievements = async (newAch: USSFAchievement[]) => {
     setAchievements(newAch);
     try {
-      localStorage.setItem('ussf_achievements', JSON.stringify(newAch));
-    } catch (e) {}
-    showToast('Achievements & Commendations database synchronized.');
+      const saved = await api.updateAchievements(newAch);
+      setAchievements(saved);
+      showToast('Achievements & Commendations database synchronized.');
+    } catch (err: any) {
+      showToast(`Error saving achievements: ${err?.message || 'Failed to save'}`);
+    }
   };
 
   const handleCreateAsset = async (asset: USSFAssetItem) => {

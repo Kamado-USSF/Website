@@ -19,6 +19,7 @@ import {
   reviewPromotion,
   reviewReport
 } from '../lib/review.js';
+import { USSF_SEED } from '../lib/seed.js';
 import {
   KAMADO_ADMIN_ACCOUNT,
   type AccountLinkRequest,
@@ -67,43 +68,45 @@ function cleanId(value: unknown): string {
  * Falling back to the request URL guarantees every path dispatches correctly.
  */
 function resolveRoutePath(req: VercelRequest): string[] {
+  // Depending on Vercel's rewrite engine, `:id` is either substituted inside
+  // `rp` itself or auto-forwarded as a separate `?id=` query parameter. Resolve
+  // every unresolved `:id` segment — not just a trailing one — so multi-segment
+  // routes such as members/:id/presence dispatch correctly.
+  const rawForwardedId = req.query.id;
+  const forwardedId = typeof rawForwardedId === 'string' ? rawForwardedId : '';
+  const resolveIds = (segments: string[]): string[] =>
+    segments.map(segment => (segment === ':id' && forwardedId ? forwardedId : segment));
+
   const fromRewrite = req.query.rp;
   if (fromRewrite !== undefined) {
     const raw = Array.isArray(fromRewrite) ? fromRewrite.join('/') : String(fromRewrite);
-    const segments = raw.split('/').filter(Boolean);
-    // Depending on Vercel's rewrite engine, `:id` is either substituted inside
-    // `rp` itself or auto-forwarded as a separate `?id=` query parameter.
-    // Normalize both shapes (and the unresolved-literal `:id`) to the same path.
-    const forwardedId = req.query.id;
-    if (typeof forwardedId === 'string' && forwardedId) {
-      const last = segments[segments.length - 1];
-      if (last === undefined) segments.push(forwardedId);
-      else if (last.startsWith(':')) segments[segments.length - 1] = forwardedId;
-      else if (segments.length === 1) segments.push(forwardedId);
-    }
+    const segments = resolveIds(raw.split('/').filter(Boolean));
+    if (forwardedId && segments.length === 1) segments.push(forwardedId);
     return segments;
   }
 
   const fromRouter = req.query.path;
   if (Array.isArray(fromRouter)) {
-    const segments = fromRouter.map(String).filter(Boolean);
+    const segments = resolveIds(fromRouter.map(String).filter(Boolean));
     if (segments.length > 0) return segments;
   } else if (typeof fromRouter === 'string' && fromRouter) {
-    return [fromRouter];
+    return resolveIds([fromRouter]);
   }
 
   const urlPath = String(req.url || '').split('?')[0];
-  return urlPath
-    .replace(/^\/api\/?/, '')
-    .split('/')
-    .filter(Boolean)
-    .map(segment => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        return segment;
-      }
-    });
+  return resolveIds(
+    urlPath
+      .replace(/^\/api\/?/, '')
+      .split('/')
+      .filter(Boolean)
+      .map(segment => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          return segment;
+        }
+      })
+  );
 }
 
 function methodNotAllowed(res: VercelResponse): void {
@@ -325,6 +328,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!rows[0]) return res.status(404).json({ success: false, error: 'Resource not found.' });
       const record = (rows[0].records as JsonObject[]).find(item => item.id === id);
       return res.status(200).json({ success: true, member: record, presenceStatus: presence });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
+  // POST /api/birthdays/gift — administrators send a birthday gift. Cash gifts
+  // credit the recipient's payout total in the same write.
+  if (route === 'birthdays' && id === 'gift' && req.method === 'POST') {
+    if (!requireAdminSession(req, res)) return;
+    const gift = objectBody(req.body);
+    if (!gift || !gift.receiverName || !gift.giftType) {
+      return res.status(400).json({ success: false, error: 'A birthday gift requires a recipient and a gift type.' });
+    }
+    try {
+      const state = await readState();
+      const gifts = (state.birthdayGifts || []) as unknown as JsonObject[];
+      const members = (state.members || []) as unknown as USSFMember[];
+      const saved: JsonObject = {
+        ...gift,
+        id: cleanId(gift.id) || `gift-${randomUUID()}`,
+        amount: Number(gift.amount) || 0,
+        date: String(gift.date || new Date().toISOString())
+      };
+      gifts.unshift(saved);
+      const updates: Array<{ collection: string; records: unknown[] }> = [{ collection: 'birthdayGifts', records: gifts }];
+      if (saved.giftType === 'CASH') {
+        const recipient = members.find(member =>
+          member.cid === saved.receiverCid || member.name === saved.receiverName
+        );
+        if (recipient) {
+          recipient.totalPayout = (recipient.totalPayout || 0) + (Number(saved.amount) || 0);
+          updates.push({ collection: 'members', records: members });
+        }
+      }
+      await writeCollections(updates);
+      return res.status(201).json({ success: true, gift: saved });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
+  // POST /api/achievements/update — replaces the shared commendations catalogue.
+  if (route === 'achievements' && id === 'update' && req.method === 'POST') {
+    if (!requireAdminSession(req, res)) return;
+    const achievements = objectBody(req.body)?.achievements;
+    if (!Array.isArray(achievements)) {
+      return res.status(400).json({ success: false, error: 'An achievements array is required.' });
+    }
+    try {
+      const sql = await getSql();
+      const rows = await sql`
+        UPDATE ussf_app_state
+        SET state = jsonb_set(state, ARRAY['achievements'], ${JSON.stringify(achievements)}::jsonb),
+            updated_at = now()
+        WHERE id = 1
+        RETURNING id
+      `;
+      if (!rows[0]) return res.status(503).json({ success: false, error: 'Shared database is not initialized.' });
+      return res.status(200).json({ success: true, achievements });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
+  // POST /api/reset-clean — administrators restore the audited production baseline.
+  if (route === 'reset-clean' && path.length === 1 && req.method === 'POST') {
+    if (!requireAdminSession(req, res)) return;
+    try {
+      const sql = await getSql();
+      const rows = await sql`
+        UPDATE ussf_app_state
+        SET state = ${JSON.stringify(USSF_SEED)}::jsonb, updated_at = now()
+        WHERE id = 1
+        RETURNING id
+      `;
+      if (!rows[0]) return res.status(503).json({ success: false, error: 'Shared database is not initialized.' });
+      return res.status(200).json({ success: true });
     } catch (error) {
       return sendApiError(res, error, operation);
     }
