@@ -43,6 +43,7 @@ const ROUTES: Record<string, { collection: string; itemKey: string; publicCreate
   'social-posts': { collection: 'socialPosts', itemKey: 'post', publicCreate: true },
   'link-requests': { collection: 'linkRequests', itemKey: 'linkRequest', publicCreate: false },
   'login-claims': { collection: 'pendingLoginClaims', itemKey: 'claim', publicCreate: true },
+  'forgot-pw': { collection: 'forgotPwRequests', itemKey: 'request', publicCreate: true },
 };
 
 // Review (approve/reject) routes are handled by the shared review logic so the
@@ -396,6 +397,87 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
       if (!rows[0]) return res.status(503).json({ success: false, error: 'Shared database is not initialized.' });
       return res.status(200).json({ success: true });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
+  // POST /api/forgot-pw — a member asks for account recovery. The request is
+  // stored in the administrator queue; a client can never mark it resolved.
+  if (route === 'forgot-pw' && path.length === 1 && req.method === 'POST') {
+    const request = objectBody(req.body);
+    if (!request || !String(request.accountName || '').trim()) {
+      return res.status(400).json({ success: false, error: 'A recovery request requires the website account name.' });
+    }
+    try {
+      const state = await readState();
+      const requests = (state.forgotPwRequests || []) as unknown as JsonObject[];
+      const saved: JsonObject = {
+        ...request,
+        id: cleanId(request.id) || `pw-${randomUUID()}`,
+        status: 'Pending',
+        requestDate: String(request.requestDate || new Date().toISOString())
+      };
+      requests.unshift(saved);
+      await writeCollections([{ collection: 'forgotPwRequests', records: requests }]);
+      return res.status(201).json({ success: true, request: saved });
+    } catch (error) {
+      return sendApiError(res, error, operation);
+    }
+  }
+
+  // GET/POST /api/milestone-choices — the 7/30-day milestone reward table.
+  if (route === 'milestone-choices' && path.length === 1) {
+    if (req.method === 'GET') {
+      try {
+        const state = await readState();
+        const choices = (state as unknown as JsonObject).milestoneChoices || [];
+        return res.status(200).json({ success: true, choices });
+      } catch (error) {
+        return sendApiError(res, error, operation);
+      }
+    }
+    if (req.method === 'POST') {
+      if (!requireAdminSession(req, res)) return;
+      const choices = objectBody(req.body)?.choices;
+      if (!Array.isArray(choices) || choices.length > 40) {
+        return res.status(400).json({ success: false, error: 'A milestone choices array is required.' });
+      }
+      try {
+        const sql = await getSql();
+        const rows = await sql`
+          UPDATE ussf_app_state
+          SET state = jsonb_set(state, ARRAY['milestoneChoices'], ${JSON.stringify(choices)}::jsonb),
+              updated_at = now()
+          WHERE id = 1
+          RETURNING id
+        `;
+        if (!rows[0]) return res.status(503).json({ success: false, error: 'Shared database is not initialized.' });
+        return res.status(200).json({ success: true, choices });
+      } catch (error) {
+        return sendApiError(res, error, operation);
+      }
+    }
+  }
+
+  // POST /api/login-rewards — replaces the daily login reward table.
+  if (route === 'login-rewards' && path.length === 1 && req.method === 'POST') {
+    if (!requireAdminSession(req, res)) return;
+    const rewards = objectBody(req.body)?.rewards;
+    if (!Array.isArray(rewards) || rewards.length < 1 || rewards.length > 60) {
+      return res.status(400).json({ success: false, error: 'A login rewards array is required.' });
+    }
+    try {
+      const sql = await getSql();
+      const rows = await sql`
+        UPDATE ussf_app_state
+        SET state = jsonb_set(state, ARRAY['loginRewards'], ${JSON.stringify(rewards)}::jsonb),
+            updated_at = now()
+        WHERE id = 1
+        RETURNING id
+      `;
+      if (!rows[0]) return res.status(503).json({ success: false, error: 'Shared database is not initialized.' });
+      return res.status(200).json({ success: true, loginRewards: rewards });
     } catch (error) {
       return sendApiError(res, error, operation);
     }

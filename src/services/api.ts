@@ -38,6 +38,7 @@ export interface AuthoritativeSystemState {
   forgotPwRequests: ForgotPasswordRequest[];
   adminEvents: AdminEvent[];
   loginRewards: DailyLoginReward[];
+  milestoneChoices?: import('../data/ussfData').MilestoneRewardChoice[];
   pendingLoginClaims: PendingLoginRewardClaim[];
   promotionRequests: PromotionRequest[];
   groupInfo: GroupInfoShape;
@@ -408,6 +409,40 @@ export const api = {
       throw new Error(json.error || 'Failed to review login reward claim');
     }
     return json.claim;
+  },
+
+  // 12b. Password recovery requests
+  async submitForgotPassword(request: ForgotPasswordRequest): Promise<ForgotPasswordRequest> {
+    const res = await fetch('/api/forgot-pw', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(request)
+    });
+    const json = await parseApiResponse<{ success: boolean; request?: ForgotPasswordRequest; error?: string }>(res, 'Submit password recovery request');
+    if (!json.request) throw new Error('Submit password recovery request failed: response did not include the saved request.');
+    return json.request;
+  },
+
+  async resolveForgotPassword(id: string, status: string, adminResponse?: string): Promise<ForgotPasswordRequest> {
+    const res = await fetch(`/api/forgot-pw/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify({ status, adminResponse })
+    });
+    const json = await parseApiResponse<{ success: boolean; request?: ForgotPasswordRequest; error?: string }>(res, 'Resolve password recovery request');
+    if (!json.request) throw new Error('Resolve password recovery request failed: response did not include the saved request.');
+    return json.request;
+  },
+
+  // 12c. Daily login reward table
+  async saveLoginRewards(rewards: DailyLoginReward[]): Promise<DailyLoginReward[]> {
+    const res = await fetch('/api/login-rewards', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ rewards })
+    });
+    const json = await parseApiResponse<{ success: boolean; loginRewards?: DailyLoginReward[]; error?: string }>(res, 'Save login rewards');
+    return json.loginRewards || rewards;
   },
 
   // 13. Milestone Choices Config

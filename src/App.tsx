@@ -304,6 +304,7 @@ export default function App() {
         if (clientClaimsAdmin && state.forgotPwRequests) setForgotPwRequests(state.forgotPwRequests);
         if (state.adminEvents) setAdminEvents(state.adminEvents);
         if (state.loginRewards) setLoginRewards(state.loginRewards);
+        if (state.milestoneChoices) setMilestoneChoices(state.milestoneChoices);
         if (clientClaimsAdmin && state.pendingLoginClaims) setPendingLoginClaims(state.pendingLoginClaims);
         if (state.groupInfo) {
           const mergedGroupInfo: GroupInfoShape = { ...USSF_GROUP_INFO, ...state.groupInfo };
@@ -470,12 +471,26 @@ export default function App() {
     return DEFAULT_MILESTONE_CHOICES;
   });
 
-  const handleUpdateMilestoneChoices = (choices: MilestoneRewardChoice[]) => {
+  const handleUpdateMilestoneChoices = async (choices: MilestoneRewardChoice[]) => {
     setMilestoneChoices(choices);
     try {
-      localStorage.setItem('ussf_milestone_choices', JSON.stringify(choices));
-    } catch (e) {}
-    showToast('Milestone reward configurations saved.');
+      const saved = await api.saveMilestoneChoices(choices);
+      setMilestoneChoices(saved);
+      showToast('Milestone reward configurations saved.');
+    } catch (err: any) {
+      showToast(`Error saving milestone rewards: ${err?.message || 'Failed to save'}`);
+    }
+  };
+
+  const handleUpdateLoginRewards = async (rewards: DailyLoginReward[]) => {
+    setLoginRewards(rewards);
+    try {
+      const saved = await api.saveLoginRewards(rewards);
+      setLoginRewards(saved);
+      showToast('Daily login reward table saved.');
+    } catch (err: any) {
+      showToast(`Error saving login rewards: ${err?.message || 'Failed to save'}`);
+    }
   };
 
   // Authoritative presence updater - retains DND and Idle preferences without automatic resets
@@ -763,14 +778,14 @@ export default function App() {
     showToast('In-game account linking request sent to Admin review queue.');
   };
 
-  const handleResolveForgotPw = (id: string, approved: boolean) => {
-    setForgotPwRequests(forgotPwRequests.map(r => {
-      if (r.id === id) {
-        return { ...r, status: approved ? 'Approved' : 'Resolved' };
-      }
-      return r;
-    }));
-    showToast(approved ? 'Password reset token approved & issued.' : 'Request dismissed.');
+  const handleResolveForgotPw = async (id: string, approved: boolean) => {
+    try {
+      const updated = await api.resolveForgotPassword(id, approved ? 'Approved' : 'Resolved');
+      setForgotPwRequests(prev => prev.map(r => (r.id === id ? updated : r)));
+      showToast(approved ? 'Password reset token approved & issued.' : 'Request dismissed.');
+    } catch (err: any) {
+      showToast(`Error resolving recovery request: ${err?.message || 'Failed to update'}`);
+    }
   };
 
   // Admin accepts/denies an enlistment application; acceptance enlists the
@@ -1377,7 +1392,7 @@ export default function App() {
                     onResolveLinkRequest={handleResolveLinkRequest}
                     onReviewApplication={handleReviewApplication}
                     loginRewards={loginRewards}
-                    onUpdateLoginRewards={setLoginRewards}
+                    onUpdateLoginRewards={handleUpdateLoginRewards}
                     members={members}
                     claims={claims}
                     onUpdateClaims={setClaims}
@@ -1665,9 +1680,14 @@ export default function App() {
         members={members}
         isBootstrapAvailable={isBootstrapAvailable}
         onOwnerBootstrap={handleOwnerBootstrap}
-        onSubmitForgotPw={(req) => {
-          setForgotPwRequests([req, ...forgotPwRequests]);
-          showToast('Password recovery request transmitted to Admin queue.');
+        onSubmitForgotPw={async (req) => {
+          try {
+            const saved = await api.submitForgotPassword(req);
+            setForgotPwRequests(prev => [saved, ...prev.filter(r => r.id !== saved.id)]);
+            showToast('Password recovery request transmitted to Admin queue.');
+          } catch (err: any) {
+            showToast(`Error submitting recovery request: ${err?.message || 'Failed to send'}`);
+          }
         }}
       />
 

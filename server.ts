@@ -42,6 +42,7 @@ import {
   SquadGroupChat,
   USSFAchievement,
   USSFAssetItem,
+  MilestoneRewardChoice,
   KAMADO_ADMIN_ACCOUNT
 } from './src/data/ussfData';
 import { validateAsset, validateGroupInfo } from './lib/validation';
@@ -96,6 +97,7 @@ interface AuthoritativeDatabase {
   squadGroups: SquadGroupChat[];
   achievements: USSFAchievement[];
   customAssets: USSFAssetItem[];
+  milestoneChoices?: MilestoneRewardChoice[];
 }
 
 function getCleanInitialDb(): AuthoritativeDatabase {
@@ -320,20 +322,21 @@ async function startServer() {
     }
   });
 
-  // Member presence update
+  // Member presence update — mirrors the deployed handler: a signed session is
+  // required and only the two presence fields are ever written.
   app.post('/api/members/:id/presence', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const { id } = req.params;
-      const { presenceStatus } = req.body;
+      const presenceStatus = String(req.body?.presenceStatus || '').trim();
+      if (!['Online', 'Idle', 'DND', 'Offline'].includes(presenceStatus)) {
+        return res.status(400).json({ success: false, error: 'Invalid presence status.' });
+      }
       db = loadDatabase();
       const idx = db.members.findIndex(m => m.id === id);
       if (idx !== -1) {
-        db.members[idx].presenceStatus = presenceStatus;
-        if (presenceStatus === 'Offline') {
-          db.members[idx].isOnlineCit = false;
-        } else {
-          db.members[idx].isOnlineCit = true;
-        }
+        db.members[idx].presenceStatus = presenceStatus as typeof db.members[number]['presenceStatus'];
+        db.members[idx].isOnlineCit = presenceStatus !== 'Offline';
         saveDatabase(db);
       }
       res.json({ success: true, presenceStatus });
@@ -697,6 +700,82 @@ async function startServer() {
     }
   });
 
+  // 7b. Password recovery requests (members submit, administrators resolve)
+  app.post('/api/forgot-pw', (req, res) => {
+    try {
+      const request = req.body || {};
+      if (!String(request.accountName || '').trim()) {
+        return res.status(400).json({ success: false, error: 'A recovery request requires the website account name.' });
+      }
+      db = loadDatabase();
+      db.forgotPwRequests ||= [];
+      const saved = {
+        ...request,
+        id: request.id || `pw-${randomUUID()}`,
+        status: 'Pending' as const,
+        requestDate: request.requestDate || new Date().toISOString()
+      };
+      db.forgotPwRequests.unshift(saved);
+      saveDatabase(db);
+      res.status(201).json({ success: true, request: saved });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.put('/api/forgot-pw/:id', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
+    try {
+      db = loadDatabase();
+      db.forgotPwRequests ||= [];
+      const index = db.forgotPwRequests.findIndex(entry => entry.id === req.params.id);
+      if (index < 0) return res.status(404).json({ success: false, error: 'Recovery request not found.' });
+      const status = String(req.body?.status || '').trim();
+      if (!['Pending', 'Approved', 'Resolved'].includes(status)) {
+        return res.status(400).json({ success: false, error: 'Invalid recovery status.' });
+      }
+      db.forgotPwRequests[index].status = status as typeof db.forgotPwRequests[number]['status'];
+      if (req.body?.adminResponse !== undefined) {
+        db.forgotPwRequests[index].adminResponse = String(req.body.adminResponse);
+      }
+      saveDatabase(db);
+      res.json({ success: true, request: db.forgotPwRequests[index] });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // 7c. Milestone reward table (7 & 30 day login event)
+  app.get('/api/milestone-choices', (_req, res) => {
+    db = loadDatabase();
+    res.json({ success: true, choices: db.milestoneChoices || [] });
+  });
+
+  app.post('/api/milestone-choices', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
+    const choices = req.body?.choices;
+    if (!Array.isArray(choices)) {
+      return res.status(400).json({ success: false, error: 'A milestone choices array is required.' });
+    }
+    db = loadDatabase();
+    db.milestoneChoices = choices;
+    saveDatabase(db);
+    res.json({ success: true, choices });
+  });
+
+  // 7d. Daily login reward table
+  app.post('/api/login-rewards', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
+    const rewards = req.body?.rewards;
+    if (!Array.isArray(rewards) || rewards.length < 1) {
+      return res.status(400).json({ success: false, error: 'A login rewards array is required.' });
+    }
+    db = loadDatabase();
+    db.loginRewards = rewards;
+    saveDatabase(db);
+    res.json({ success: true, loginRewards: rewards });
+  });
+
   // 8. Admin Events
   app.post('/api/admin-events', (req, res) => {
     if (!requireAdminSession(req, res)) return;
@@ -718,6 +797,7 @@ async function startServer() {
 
   // 9. Birthday Gifts
   app.post('/api/birthdays/gift', (req, res) => {
+    if (!requireAdminSession(req, res)) return;
     try {
       const gift: BirthdayGift = req.body;
       db = loadDatabase();
