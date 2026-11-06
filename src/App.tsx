@@ -509,7 +509,9 @@ export default function App() {
       await api.updateMember(currentUser.id, { presenceStatus: status, isOnlineCit: status !== 'Offline' });
       showToast(`Presence status persisted: ${status}`);
     } catch (err: any) {
-      showToast(`Presence updated: ${status}`);
+      // Members have no server-side account, so the roster cannot store their presence.
+      // Say so instead of claiming a save that did not happen.
+      showToast(`Presence set on this device: ${status}`);
     }
   };
 
